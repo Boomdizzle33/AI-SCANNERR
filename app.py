@@ -12,7 +12,7 @@ OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
 
 # 🔹 UI Components for Live Updates
-st.title("📊 AI Stock Scanner (Now Shows Real-Time Progress 🚀)")
+st.title("📊 AI Stock Scanner (Now Fixes Sentiment Scores 🚀)")
 progress_bar = st.progress(0)
 status_text = st.empty()  # 🔹 Live update text
 stock_output = st.empty()  # 🔹 Live output table
@@ -31,31 +31,47 @@ def get_market_trend():
     except:
         return 0.75  # Neutral Score
 
-# 🔹 Fetch News Sentiment (Batch Processing)
+# 🔹 Fetch News Sentiment (Fixes Zero Score Issue)
 def get_news_sentiment(symbol):
-    """Fetches news sentiment for a stock."""
+    """Fetches news sentiment for a stock and ensures correct OpenAI response parsing."""
     try:
         ddgs = DDGS()
         headlines = [result["title"] for result in ddgs.news(symbol, max_results=3)]
+        
         if not headlines:
+            st.write(f"⚠️ No news found for {symbol}, setting sentiment to neutral (0.0).")
             return 0.0  # No news = neutral sentiment
         
         news_text = "\n".join(headlines)
-        prompt = f"Analyze the sentiment of these stock news headlines for {symbol}. Assign a sentiment score (-1.0 to 1.0):\n\n{news_text}"
+        prompt = f"""
+        Analyze the sentiment of these stock news headlines for {symbol}.
+        Assign a sentiment score between -1.0 (very negative) and 1.0 (very positive).
+        Headlines:
+        {news_text}
+        Respond with only a single number.
+        """
 
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
         data = {"model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}], "max_tokens": 10}
 
         response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
         response.raise_for_status()
-        return float(response.json()["choices"][0]["message"]["content"].strip())
-    except:
-        return 0.0  # Default to neutral sentiment
+        result_text = response.json()["choices"][0]["message"]["content"].strip()
 
-# 🔹 AI Trade Score Calculation
+        # Ensure the response is a valid float number
+        try:
+            sentiment_score = float(result_text)
+            return max(-1.0, min(1.0, sentiment_score))  # Ensure score is between -1.0 and 1.0
+        except ValueError:
+            st.write(f"⚠️ Invalid OpenAI response for {symbol}: {result_text}. Setting sentiment to neutral (0.0).")
+            return 0.0  # Default to neutral if response is invalid
+    except:
+        return 0.0  # Default to neutral sentiment on error
+
+# 🔹 AI Trade Score Calculation (Ensures Scores Change)
 def calculate_ai_score(market_trend, sentiment_score):
     """Calculates AI trade score based on weighted factors (0-100 scale)."""
-    return round((market_trend * 50) + (sentiment_score * 50), 2)
+    return round((market_trend * 50) + ((sentiment_score + 1) * 25), 2)  # Adjusted weighting
 
 # 🔹 Process Stocks Sequentially (Shows Live Progress)
 def process_stocks(tickers):
@@ -89,6 +105,7 @@ if uploaded_file:
 
     st.success("✅ AI Analysis Completed!")
     st.dataframe(pd.DataFrame(final_results, columns=["Stock", "Sentiment Score", "AI Score", "Trade Approved"]))
+
 
 
 
