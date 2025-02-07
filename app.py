@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import concurrent.futures
 
-# 🔹 App Title
+# 🔹 Set Page Title
 st.set_page_config(page_title="📈 AI Stock Scanner", layout="wide")
 st.title("📊 AI-Powered Stock Trading WebApp")
 
@@ -12,7 +12,7 @@ st.write("Upload your stock list to analyze swing trade setups using AI.")
 # 🔹 File Upload for Stock List
 uploaded_file = st.file_uploader("Upload TradingView CSV File", type=["csv"])
 
-# 🔹 API Keys (Will Be Set in Streamlit Secrets)
+# 🔹 API Keys (Set in Streamlit Secrets for Security)
 POLYGON_API_KEY = st.secrets["polygon"]["api_key"]
 OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 
@@ -77,21 +77,34 @@ def get_ai_analysis(stock_data):
     except requests.RequestException:
         return "Error retrieving AI analysis"
 
-# 🔹 Process Uploaded Stock List
+# 🔹 Process Uploaded Stock List with Progress Bar
 if uploaded_file:
     stock_list = pd.read_csv(uploaded_file)
     tickers = stock_list["Ticker"].tolist()
 
     st.write("Running AI Analysis on Stocks...")
 
+    # 🔹 Progress Bar Initialization
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
     swing_trade_results = []
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        for ticker in tickers:
+        for i, ticker in enumerate(tickers):
             stock_data = get_stock_data(ticker)
             if stock_data:
                 ai_analysis = get_ai_analysis(stock_data)
                 swing_trade_results.append((ticker, ai_analysis))
 
-    # Display Final Trade Setups
+            # 🔹 Update Progress Bar
+            progress_percentage = int(((i + 1) / len(tickers)) * 100)
+            progress_bar.progress(progress_percentage)
+            progress_text.text(f"🔍 Processing {ticker}... ({progress_percentage}%)")
+
+    # 🔹 Display Final Trade Setups
     df = pd.DataFrame(swing_trade_results, columns=["Stock", "AI Analysis"])
     st.dataframe(df)
+
+    # 🔹 Show Completion Message
+    st.success("✅ AI Analysis Completed!")
+
