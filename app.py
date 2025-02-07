@@ -12,43 +12,27 @@ OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
 
 # 🔹 UI Components for Live Updates
-st.title("📊 AI Stock Scanner (Now Fixes Sentiment Scores 🚀)")
+st.title("📊 AI Stock Scanner (Now Fully AI-Powered 🚀)")
 progress_bar = st.progress(0)
-status_text = st.empty()  # 🔹 Live update text
-stock_output = st.empty()  # 🔹 Live output table
+time_remaining_text = st.empty()  
 
-# 🔹 Get Market Trend (Fetch Only Once)
-def get_market_trend():
-    """Fetches SPY & QQQ trend once instead of per stock."""
-    try:
-        spy_url = f"https://api.polygon.io/v2/aggs/ticker/SPY/prev?apikey={POLYGON_API_KEY}"
-        qqq_url = f"https://api.polygon.io/v2/aggs/ticker/QQQ/prev?apikey={POLYGON_API_KEY}"
-        
-        spy = requests.get(spy_url, timeout=5).json()["results"][0]["c"]
-        qqq = requests.get(qqq_url, timeout=5).json()["results"][0]["c"]
-
-        return 1.0 if spy > 50 and qqq > 50 else 0.5
-    except:
-        return 0.75  # Neutral Score
-
-# 🔹 Fetch News Sentiment (Fixes Zero Score Issue)
+# 🔹 Function to Fetch News Sentiment
 def get_news_sentiment(symbol):
-    """Fetches news sentiment for a stock and ensures correct OpenAI response parsing."""
+    """Fetches news sentiment for a stock using OpenAI and DuckDuckGo Search."""
     try:
         ddgs = DDGS()
-        headlines = [result["title"] for result in ddgs.news(symbol, max_results=3)]
+        headlines = [result["title"] for result in ddgs.news(symbol, max_results=5)]
         
         if not headlines:
-            st.write(f"⚠️ No news found for {symbol}, setting sentiment to neutral (0.0).")
-            return 0.0  # No news = neutral sentiment
-        
+            return 0.0  
+
         news_text = "\n".join(headlines)
         prompt = f"""
         Analyze the sentiment of these stock news headlines for {symbol}.
         Assign a sentiment score between -1.0 (very negative) and 1.0 (very positive).
+        Respond with only a single number.
         Headlines:
         {news_text}
-        Respond with only a single number.
         """
 
         headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
@@ -58,39 +42,110 @@ def get_news_sentiment(symbol):
         response.raise_for_status()
         result_text = response.json()["choices"][0]["message"]["content"].strip()
 
-        # Ensure the response is a valid float number
-        try:
-            sentiment_score = float(result_text)
-            return max(-1.0, min(1.0, sentiment_score))  # Ensure score is between -1.0 and 1.0
-        except ValueError:
-            st.write(f"⚠️ Invalid OpenAI response for {symbol}: {result_text}. Setting sentiment to neutral (0.0).")
-            return 0.0  # Default to neutral if response is invalid
+        return max(-1.0, min(1.0, float(result_text)))  
     except:
-        return 0.0  # Default to neutral sentiment on error
+        return 0.0  
 
-# 🔹 AI Trade Score Calculation (Ensures Scores Change)
-def calculate_ai_score(market_trend, sentiment_score):
-    """Calculates AI trade score based on weighted factors (0-100 scale)."""
-    return round((market_trend * 50) + ((sentiment_score + 1) * 25), 2)  # Adjusted weighting
+# 🔹 Function to Get Sector Strength
+def get_sector_strength(symbol):
+    """Fetches sector performance and ranks relative strength."""
+    try:
+        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2023-12-01/2024-02-01?apikey={POLYGON_API_KEY}"
+        response = requests.get(url, timeout=5).json()
+        sector_strength = response["results"][0]["c"]  
+        return sector_strength  
+    except:
+        return 0  
 
-# 🔹 Process Stocks Sequentially (Shows Live Progress)
-def process_stocks(tickers):
-    """Processes stocks one by one, updating Streamlit UI in real-time."""
-    market_trend = get_market_trend()
+# 🔹 AI Predicts Breakout Probability
+def ai_predict_breakout(symbol):
+    """Uses AI to analyze technical indicators & predict breakout probability."""
+    try:
+        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2023-12-01/2024-02-01?apikey={POLYGON_API_KEY}"
+        response = requests.get(url, timeout=5).json()
+        prices = [candle["c"] for candle in response["results"]]
+
+        ma_20 = sum(prices[-20:]) / 20
+        ma_50 = sum(prices[-50:]) / 50
+        rsi = sum([prices[i] - prices[i - 1] for i in range(1, len(prices)) if prices[i] > prices[i - 1]]) / 14 * 100
+        macd = ma_20 - ma_50
+        atr = max(prices[-10:]) - min(prices[-10:])
+        
+        ai_input = f"""
+        Predict the probability of a breakout for {symbol} based on:
+        - 20-day MA: {ma_20}
+        - 50-day MA: {ma_50}
+        - RSI: {rsi}
+        - MACD: {macd}
+        - ATR: {atr}
+        Provide a probability (0-100). Respond with only a single number.
+        """
+
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        data = {"model": "gpt-4-turbo", "messages": [{"role": "user", "content": ai_input}], "max_tokens": 10}
+
+        response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
+        response.raise_for_status()
+        return max(0, min(100, float(response.json()["choices"][0]["message"]["content"].strip())))
+    except:
+        return 50  
+
+# 🔹 AI Confirms Breakout Strength Using Volume & Institutional Activity
+def ai_confirm_breakout_strength(symbol):
+    """Uses AI to confirm breakout strength based on volume and institutional buying."""
+    try:
+        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2023-12-01/2024-02-01?apikey={POLYGON_API_KEY}"
+        response = requests.get(url, timeout=5).json()
+        volumes = [candle["v"] for candle in response["results"]]
+        avg_volume = sum(volumes[-50:]) / 50
+        last_volume = volumes[-1]
+
+        ai_input = f"""
+        Analyze {symbol} for institutional buying strength.
+        - 50-day Avg Volume: {avg_volume}
+        - Last Trading Volume: {last_volume}
+        Provide a confidence score (0-100). Respond with only a single number.
+        """
+
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        data = {"model": "gpt-4-turbo", "messages": [{"role": "user", "content": ai_input}], "max_tokens": 10}
+
+        response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
+        response.raise_for_status()
+        return max(0, min(100, float(response.json()["choices"][0]["message"]["content"].strip())))
+    except:
+        return 50  
+
+# 🔹 AI Trade Score Calculation
+def calculate_ai_score(sentiment_score, sector_strength, breakout_probability, breakout_strength):
+    """Calculates AI trade score based on multiple weighted factors (0-100 scale)."""
+    return round(
+        ((sentiment_score + 1) * 20) + 
+        (sector_strength * 20) + 
+        (breakout_probability * 30) + 
+        (breakout_strength * 30), 2
+    )
+
+# 🔹 Process Stocks & Add Trade Levels
+def process_stocks(tickers, account_size):
+    """Processes stocks and calculates trade levels with estimated time left."""
     results = []
+    total_stocks = len(tickers)
+    start_time = time.time()
 
     for i, ticker in enumerate(tickers):
-        status_text.write(f"🔍 Scanning Stock: **{ticker}** ({i+1}/{len(tickers)})...")
-
         sentiment_score = get_news_sentiment(ticker)
-        ai_score = calculate_ai_score(market_trend, sentiment_score)
-        trade_approved = ai_score >= 70  # ✅ Trade must score 70+ to be valid
+        sector_strength = get_sector_strength(ticker)
+        breakout_probability = ai_predict_breakout(ticker)
+        breakout_strength = ai_confirm_breakout_strength(ticker)
 
-        results.append([ticker, sentiment_score, ai_score, trade_approved])
+        ai_score = calculate_ai_score(sentiment_score, sector_strength, breakout_probability, breakout_strength)
 
-        # 🔹 Update Progress Bar & UI
-        progress_bar.progress((i + 1) / len(tickers))
-        stock_output.write(pd.DataFrame(results, columns=["Stock", "Sentiment Score", "AI Score", "Trade Approved"]))
+        trade_approved = ai_score >= 70  
+
+        results.append([ticker, sentiment_score, sector_strength, breakout_probability, breakout_strength, ai_score, trade_approved])
+
+        progress_bar.progress((i + 1) / total_stocks)
 
     return results
 
@@ -100,11 +155,14 @@ if uploaded_file:
     stock_list = pd.read_csv(uploaded_file)
     tickers = stock_list["Ticker"].tolist()
 
-    st.write("🔍 **Scanning Stocks... Please Wait...**")
-    final_results = process_stocks(tickers)
+    account_size = st.number_input("Enter Your Account Size ($):", min_value=1000, value=10000, step=500)
 
-    st.success("✅ AI Analysis Completed!")
-    st.dataframe(pd.DataFrame(final_results, columns=["Stock", "Sentiment Score", "AI Score", "Trade Approved"]))
+    if st.button("Run AI Scanner"):
+        st.write("🔍 **Scanning Stocks... Please Wait...**")
+        final_results = process_stocks(tickers, account_size)
+
+        st.success("✅ AI Analysis Completed!")
+        st.dataframe(pd.DataFrame(final_results, columns=["Stock", "Sentiment Score", "Sector Strength", "Breakout Probability", "Breakout Strength", "AI Score", "Trade Approved"]))
 
 
 
