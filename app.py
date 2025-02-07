@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import concurrent.futures
 import time
-from duckduckgo_search import ddg_news
+from duckduckgo_search import DDGS  # ✅ Corrected Import
 import openai
 
 # 🔹 Load API Keys Securely from Streamlit Secrets
@@ -28,69 +28,34 @@ def get_market_trend():
     except:
         return 0.75  # Neutral Market (Default)
 
-# 🔹 Function to Check Sector Strength
-def get_sector_strength(symbol):
-    """Assigns a strength score to the stock's sector."""
-    sector_etfs = {
-        "Technology": "XLK",
-        "Financials": "XLF",
-        "Healthcare": "XLV",
-        "Energy": "XLE",
-        "Consumer Discretionary": "XLY"
-    }
-
-    sector = sector_etfs.get("Technology")  # Replace with actual sector lookup
-    if not sector:
-        return 0.5  # Neutral Score
-
-    try:
-        url = f"https://api.polygon.io/v2/aggs/ticker/{sector}/prev?apikey={POLYGON_API_KEY}"
-        sector_data = requests.get(url, timeout=5).json()
-        sector_performance = sector_data["results"][0]["c"]
-        return 1.0 if sector_performance > 50 else 0.5  # Strong = 1.0, Weak = 0.5
-    except:
-        return 0.5  # Neutral Score
-
-# 🔹 Function to Calculate Relative Strength (RS)
-def get_relative_strength(symbol):
-    """Calculates relative strength of a stock vs. SPY (0-1 scale)."""
-    try:
-        stock_url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2023-11-01/2024-02-01?apikey={POLYGON_API_KEY}"
-        spy_url = f"https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/2023-11-01/2024-02-01?apikey={POLYGON_API_KEY}"
-        
-        stock_data = requests.get(stock_url, timeout=5).json()
-        spy_data = requests.get(spy_url, timeout=5).json()
-
-        stock_return = (stock_data["results"][-1]["c"] - stock_data["results"][0]["c"]) / stock_data["results"][0]["c"]
-        spy_return = (spy_data["results"][-1]["c"] - spy_data["results"][0]["c"]) / spy_data["results"][0]["c"]
-
-        rs_score = (stock_return / spy_return)
-        return min(1.0, max(0, rs_score))  # Normalize to 0-1 scale
-    except:
-        return 0.5  # Neutral Score
-
-# 🔹 Function to Get News Sentiment Score
+# 🔹 Function to Get News Sentiment Score (FIXED ✅)
 def get_news_sentiment(symbol):
-    """Fetches news sentiment using AI analysis."""
-    headlines = ddg_news(symbol, safesearch="Off", time="d", max_results=5)
-    if not headlines:
-        return 0.5  
-
-    news_text = "\n".join([h['title'] for h in headlines])
-    prompt = f"Analyze these stock news headlines for {symbol}. Assign a sentiment score (-1.0 to 1.0): {news_text}"
-
-    data = {"model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}], "max_tokens": 10}
-
+    """Fetches recent news headlines for sentiment analysis."""
     try:
-        response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"})
-        return float(response.json()["choices"][0]["message"]["content"].strip())
-    except:
-        return 0.5  # Neutral Score
+        ddgs = DDGS()  # ✅ Corrected DuckDuckGo Search
+        headlines = [result["title"] for result in ddgs.news(symbol, max_results=5)]
+        if not headlines:
+            return 0.0  # No news available, return neutral score
+        
+        # Convert headlines to a single text prompt
+        news_text = "\n".join(headlines)
+        prompt = f"Analyze the sentiment of these news headlines for {symbol}. Assign a sentiment score (-1.0 to 1.0): {news_text}"
 
-# 🔹 AI Trade Score Calculation
-def calculate_ai_score(market_trend, sector_strength, rs_score, sentiment_score):
+        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+        data = {"model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}], "max_tokens": 10}
+
+        response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
+        response.raise_for_status()
+        result = response.json()
+        
+        return float(result["choices"][0]["message"]["content"].strip())
+    except:
+        return 0.0  # Default neutral sentiment if an error occurs
+
+# 🔹 Function to Calculate AI Score for a Stock
+def calculate_ai_score(market_trend, sentiment_score):
     """Calculates AI trade score based on weighted factors (0-100 scale)."""
-    score = (market_trend * 30) + (sector_strength * 15) + (rs_score * 25) + (sentiment_score * 30)
+    score = (market_trend * 50) + (sentiment_score * 50)
     return round(score, 2)
 
 # 🔹 Process Uploaded Stock List in Parallel
@@ -99,7 +64,7 @@ if uploaded_file:
     stock_list = pd.read_csv(uploaded_file)
     tickers = stock_list["Ticker"].tolist()
 
-    st.write("🔍 Running AI Analysis (Optimized for Deployment)...")
+    st.write("🔍 Running AI Analysis (Updated for News Sentiment Fix)...")
 
     # 🔹 Progress Bar for User Feedback
     progress_bar = st.progress(0)
@@ -108,21 +73,19 @@ if uploaded_file:
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         for ticker in tickers:
             market_trend = get_market_trend()
-            sector_strength = get_sector_strength(ticker)
-            rs_score = get_relative_strength(ticker)
             sentiment_score = get_news_sentiment(ticker)
 
-            ai_score = calculate_ai_score(market_trend, sector_strength, rs_score, sentiment_score)
+            ai_score = calculate_ai_score(market_trend, sentiment_score)
             trade_approved = ai_score >= 70  # ✅ Trade must score 70+ to be valid
 
-            results.append((ticker, rs_score, sentiment_score, ai_score, trade_approved))
+            results.append((ticker, sentiment_score, ai_score, trade_approved))
 
     # 🔹 Convert to Pandas DataFrame for Faster Processing
-    df = pd.DataFrame(results, columns=["Stock", "RS Score", "Sentiment", "AI Score", "Trade Approved"])
+    df = pd.DataFrame(results, columns=["Stock", "Sentiment Score", "AI Score", "Trade Approved"])
 
     # 🔹 Display Final Trade Setups in Streamlit
     st.dataframe(df)
-    st.success("✅ AI Analysis Completed & Ready for Deployment!")
+    st.success("✅ AI Analysis Completed & News Sentiment Fixed!")
 
 
 
