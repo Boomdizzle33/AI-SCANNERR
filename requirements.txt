@@ -1,10 +1,9 @@
 streamlit
-pandas
-numpy>=1.21.0
 requests
-pandas_ta
-duckduckgo_search
+pandas
+numpy
+ta
+tensorflow
 openai
-setuptools
 
 
