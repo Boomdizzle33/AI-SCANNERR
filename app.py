@@ -12,7 +12,7 @@ OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
 
 # 🔹 UI Components for Live Updates
-st.title("📊 AI Stock Scanner (Now Fully AI-Powered 🚀)")
+st.title("📊 AI Stock Scanner (Fully AI-Powered 🚀)")
 progress_bar = st.progress(0)
 time_remaining_text = st.empty()  
 
@@ -40,9 +40,7 @@ def get_news_sentiment(symbol):
 
         response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
         response.raise_for_status()
-        result_text = response.json()["choices"][0]["message"]["content"].strip()
-
-        return max(-1.0, min(1.0, float(result_text)))  
+        return max(-1.0, min(1.0, float(response.json()["choices"][0]["message"]["content"].strip())))  
     except:
         return 0.0  
 
@@ -127,8 +125,8 @@ def calculate_ai_score(sentiment_score, sector_strength, breakout_probability, b
     )
 
 # 🔹 Process Stocks & Add Trade Levels
-def process_stocks(tickers, account_size):
-    """Processes stocks and calculates trade levels with estimated time left."""
+def process_stocks(tickers):
+    """Processes stocks and calculates AI scores with estimated time left."""
     results = []
     total_stocks = len(tickers)
     start_time = time.time()
@@ -140,7 +138,6 @@ def process_stocks(tickers, account_size):
         breakout_strength = ai_confirm_breakout_strength(ticker)
 
         ai_score = calculate_ai_score(sentiment_score, sector_strength, breakout_probability, breakout_strength)
-
         trade_approved = ai_score >= 70  
 
         results.append([ticker, sentiment_score, sector_strength, breakout_probability, breakout_strength, ai_score, trade_approved])
@@ -155,11 +152,9 @@ if uploaded_file:
     stock_list = pd.read_csv(uploaded_file)
     tickers = stock_list["Ticker"].tolist()
 
-    account_size = st.number_input("Enter Your Account Size ($):", min_value=1000, value=10000, step=500)
-
     if st.button("Run AI Scanner"):
         st.write("🔍 **Scanning Stocks... Please Wait...**")
-        final_results = process_stocks(tickers, account_size)
+        final_results = process_stocks(tickers)
 
         st.success("✅ AI Analysis Completed!")
         st.dataframe(pd.DataFrame(final_results, columns=["Stock", "Sentiment Score", "Sector Strength", "Breakout Probability", "Breakout Strength", "AI Score", "Trade Approved"]))
