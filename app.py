@@ -12,7 +12,7 @@ OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
 
 # 🔹 UI Components for Live Updates
-st.title("📊 AI Stock Scanner (Fixed Stock Prices 🚀)")
+st.title("📊 AI Stock Scanner (Fully Fixed 🚀)")
 
 # Progress bar & estimated time display
 progress_bar = st.progress(0)
@@ -54,7 +54,7 @@ def get_stock_data(symbol):
         response = requests.get(url, timeout=5).json()
 
         if "results" not in response or not response["results"]:
-            return None, None, None, None  
+            return None, None, None  
 
         data = response["results"][-1]  # Most recent data point
         last_close = data.get("c", None)  
@@ -62,11 +62,31 @@ def get_stock_data(symbol):
         low_price = data.get("l", None)  
 
         if None in (last_close, high_price, low_price):
-            return None, None, None, None  
+            return None, None, None  
 
         return round(last_close, 2), round(high_price, 2), round(low_price, 2)
     except:
         return None, None, None  
+
+# 🔹 Function to Check for Upcoming Earnings
+def check_earnings_date(symbol):
+    """Checks if the stock has earnings in the next 7 days using Polygon.io."""
+    try:
+        url = f"https://api.polygon.io/v3/reference/tickers/{symbol}/earnings?apikey={POLYGON_API_KEY}"
+        response = requests.get(url, timeout=5).json()
+        
+        earnings_list = response.get("results", [])
+        if earnings_list:
+            upcoming_earnings = earnings_list[0]["reportDate"]
+            days_until_earnings = (pd.to_datetime(upcoming_earnings) - pd.to_datetime("today")).days
+            
+            if days_until_earnings <= 7:
+                return f"⚠️ Earnings in {days_until_earnings} days ({upcoming_earnings})"
+            else:
+                return "✅ No earnings risk"
+        return "✅ No earnings risk"
+    except:
+        return "❓ Earnings data unavailable"
 
 # 🔹 AI Predicts Breakout Probability
 def ai_predict_breakout(symbol):
@@ -108,7 +128,7 @@ def process_stocks(tickers):
             continue  # Skip stocks with missing data
 
         entry_price = calculate_entry_price(last_close, high, low)  
-        earnings_warning = check_earnings_date(ticker)
+        earnings_warning = check_earnings_date(ticker)  # ✅ Moved `check_earnings_date()` Above
 
         ai_score = round((sentiment_score * 20) + (breakout_probability * 0.8), 2)
 
