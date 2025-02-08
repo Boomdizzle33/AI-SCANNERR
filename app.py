@@ -7,7 +7,7 @@ import openai
 import ta  # Technical analysis library; install via pip install ta
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from duckduckgo_search import DDGS  # Import DDGS from duckduckgo_search
+from duckduckgo_search import DDGS  # Import for DuckDuckGo news retrieval
 
 # ----------------------------
 # CONFIGURATION & API KEYS
@@ -42,7 +42,7 @@ def fetch_stock_news(ticker, start_date, end_date):
     """
     query = f"{ticker} news"
     with DDGS() as ddgs:
-        # Removed the 'time' keyword argument since it's not supported.
+        # Removed unsupported keyword arguments.
         results = ddgs.news(query, max_results=20)
     filtered_results = []
     for article in results:
@@ -62,8 +62,11 @@ def fetch_stock_news(ticker, start_date, end_date):
 
 def analyze_sentiment(article_content):
     """
-    Use OpenAI's ChatCompletion API to analyze the sentiment of a news article excerpt.
+    Use OpenAI's ChatCompletion.create to analyze the sentiment of a news article excerpt.
     The assistant is instructed to provide a one-word answer: bullish, bearish, or neutral.
+    
+    NOTE: If you receive an error about openai.ChatCompletion not being supported, either run 
+    'openai migrate' or pin your installation to openai==0.28.
     """
     prompt = (
         "Analyze the following news article excerpt and determine its overall sentiment. "
@@ -250,7 +253,7 @@ def get_market_trend():
     """
     df = fetch_historical_data("SPY", days=100)
     if df.empty:
-        return True
+        return True  # Default to bullish if data is missing.
     df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
     latest = df.iloc[-1]
     return latest["c"] > latest["SMA50"]
@@ -362,6 +365,5 @@ def main():
             
 if __name__ == "__main__":
     main()
-
 
 
