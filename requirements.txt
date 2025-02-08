@@ -1,6 +1,6 @@
 streamlit
 pandas
-numpy
+numpy>=1.21.0
 requests
 pandas_ta
 duckduckgo_search
