@@ -7,12 +7,13 @@ import openai
 import ta  # Technical analysis library; install via pip install ta
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+from duckduckgo_search import DDGS  # New import for DuckDuckGo news
 
 # ----------------------------
 # CONFIGURATION & API KEYS
 # ----------------------------
 # Store these keys securely. In Streamlit Cloud, set these in your Secrets.
-POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
+POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key (still used for historical data)
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]        # Your OpenAI API key
 openai.api_key = OPENAI_API_KEY
 
@@ -32,26 +33,32 @@ sector_map = {
 }
 
 # ----------------------------
-# STEP 1: Rule-Based Filtering via News Sentiment
+# STEP 1: Rule-Based Filtering via News Sentiment using DuckDuckGo
 # ----------------------------
 def fetch_stock_news(ticker, start_date, end_date):
     """
-    Fetch news for a given stock ticker between start_date and end_date from Polygon.io.
+    Fetch news for a given stock ticker between start_date and end_date using DuckDuckGo News.
     The dates should be timezone-aware datetime objects.
     """
-    url = "https://api.polygon.io/v2/reference/news"
-    params = {
-        "ticker": ticker,
-        "published_utc.gte": start_date.strftime("%Y-%m-%dT00:00:00Z"),
-        "published_utc.lt": end_date.strftime("%Y-%m-%dT00:00:00Z"),
-        "apiKey": POLYGON_API_KEY,
-    }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        return response.json().get("results", [])
-    else:
-        st.error(f"Error fetching news for {ticker}")
-        return []
+    query = f"{ticker} news"
+    with DDGS() as ddgs:
+        # Use time='w' to fetch news over the past week and then filter manually
+        results = ddgs.news(query, time='w', max_results=20)
+    filtered_results = []
+    for article in results:
+        # Expecting the article dictionary to have a "date" field in "YYYY-MM-DD" format
+        if "date" in article:
+            try:
+                article_date = datetime.datetime.strptime(article["date"], "%Y-%m-%d")
+                article_date = article_date.replace(tzinfo=datetime.timezone.utc)
+                if start_date <= article_date < end_date:
+                    filtered_results.append(article)
+            except Exception as e:
+                # If date parsing fails, include the article anyway
+                filtered_results.append(article)
+        else:
+            filtered_results.append(article)
+    return filtered_results
 
 def analyze_sentiment(article_content):
     """
@@ -85,7 +92,6 @@ def scan_for_bullish_stocks(stock_list):
     For each stock in the list, check if it has at least 5 bullish news articles over the past 2 days.
     Returns a dictionary with tickers and a count of bullish articles.
     """
-    # Use timezone-aware UTC datetime objects
     end_date = datetime.datetime.now(datetime.timezone.utc)
     start_date = end_date - datetime.timedelta(days=2)  # Broader window: last 2 days
     bullish_candidates = {}
@@ -93,7 +99,7 @@ def scan_for_bullish_stocks(stock_list):
         articles = fetch_stock_news(ticker, start_date, end_date)
         bullish_count = 0
         for article in articles:
-            content = article.get("title", "") + ". " + article.get("description", "")
+            content = article.get("title", "") + ". " + article.get("body", "")
             if "bullish" in analyze_sentiment(content):
                 bullish_count += 1
         if bullish_count >= 5:
@@ -144,7 +150,6 @@ def perform_technical_analysis(ticker):
     df = fetch_historical_data(ticker)
     if df.empty:
         return None
-    # Compute technical indicators
     df["SMA20"] = ta.trend.sma_indicator(df["c"], window=20)
     df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
     df["RSI"] = ta.momentum.rsi(df["c"], window=14)
@@ -202,7 +207,6 @@ def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20,
     df = fetch_historical_data(ticker)
     if df.empty:
         return 0
-    # Calculate technical indicators and volume contraction
     df["SMA20"] = ta.trend.sma_indicator(df["c"], window=20)
     df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
     df["RSI"] = ta.momentum.rsi(df["c"], window=14)
@@ -219,7 +223,6 @@ def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20,
     if df.empty or len(df) < sequence_length:
         return 0
 
-    # Define the feature set (VCP-related indicators)
     feature_cols = ['SMA20', 'SMA50', 'RSI', 'MACD',
                     'Bollinger_High', 'Bollinger_Low',
                     'Support', 'Resistance', 'Volume_Spike', 'Volume_Trend']
@@ -227,18 +230,15 @@ def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20,
     if len(df) < sequence_length:
         return 0
 
-    # Use the last 'sequence_length' days as input for the LSTM model
     X_latest = df[feature_cols].values[-sequence_length:]
     X_latest = X_latest.reshape(1, sequence_length, len(feature_cols))
     
     lstm_model = load_pretrained_lstm_model()
     ml_prob = lstm_model.predict(X_latest)[0][0]
     
-    # Adjust probability using bullish sentiment as a refinement signal
     sentiment_score = min(1.0, bullish_count / 10.0)
     final_prob = ml_prob * (1 + 0.3 * sentiment_score)
     
-    # Further adjust based on overall market and sector strength
     market_multiplier = 1.1 if get_market_trend() else 0.9
     sector_multiplier = get_sector_strength(ticker)
     final_prob = final_prob * market_multiplier * sector_multiplier
@@ -251,7 +251,7 @@ def get_market_trend():
     """
     df = fetch_historical_data("SPY", days=100)
     if df.empty:
-        return True  # Default to bullish if data is missing.
+        return True
     df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
     latest = df.iloc[-1]
     return latest["c"] > latest["SMA50"]
@@ -293,7 +293,6 @@ def generate_breakout_report(bullish_candidates):
             continue
         ml_breakout_prob = compute_lstm_breakout_probability(ticker, info["bullish_count"])
         entry_price = tech_data["current_price"]
-        # Use support as stop-loss if available; otherwise assume a 2% drop.
         stop_loss = tech_data["Support"] if tech_data["Support"] > 0 else entry_price * 0.98
         profit_target = calculate_trade_levels(entry_price, stop_loss)
         report_rows.append({
@@ -364,7 +363,6 @@ def main():
             
 if __name__ == "__main__":
     main()
-
 
 
 
