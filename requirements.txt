@@ -2,7 +2,7 @@ streamlit
 requests
 pandas
 numpy
-openai
+openai==0.28.0
 ta
 tensorflow
 duckduckgo_search
