@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import datetime
 import openai
-import ta  # Install with: pip install ta
+import ta  # Technical analysis library; install via pip install ta
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 
@@ -82,7 +82,8 @@ def scan_for_bullish_stocks(stock_list):
     For each stock in the list, check if it has at least 5 bullish news articles today.
     Returns a dictionary with tickers and a count of bullish articles.
     """
-    today = datetime.datetime.utcnow()
+    # Use a timezone-aware UTC datetime object
+    today = datetime.datetime.now(datetime.timezone.utc)
     bullish_candidates = {}
     for ticker in stock_list:
         articles = fetch_stock_news(ticker, today)
@@ -192,7 +193,7 @@ def load_pretrained_lstm_model():
 def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20, breakout_threshold=0.01):
     """
     Compute the breakout probability for the stock using the pre-trained LSTM model.
-    The model refines the candidate by capturing nuanced patterns from historical data.
+    The ML model refines the candidate by capturing nuanced patterns from historical data.
     """
     df = fetch_historical_data(ticker)
     if df.empty:
@@ -222,7 +223,7 @@ def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20,
     if len(df) < sequence_length:
         return 0
 
-    # Use the last sequence_length days as input for the LSTM model
+    # Use the last 'sequence_length' days as input for the LSTM model
     X_latest = df[feature_cols].values[-sequence_length:]
     X_latest = X_latest.reshape(1, sequence_length, len(feature_cols))
     
@@ -241,12 +242,12 @@ def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20,
 
 def get_market_trend():
     """
-    Assess overall market trend using SPY as a proxy.
+    Assess the overall market trend using SPY as a proxy.
     Returns True if bullish (current price > 50-day SMA), otherwise False.
     """
     df = fetch_historical_data("SPY", days=100)
     if df.empty:
-        return True
+        return True  # Default to bullish if data is missing.
     df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
     latest = df.iloc[-1]
     return latest["c"] > latest["SMA50"]
@@ -254,7 +255,7 @@ def get_market_trend():
 def get_sector_strength(ticker):
     """
     Evaluate the strength of the stock's sector using its representative ETF.
-    Returns a multiplier (1.1 for strong sector, 0.9 for weak).
+    Returns a multiplier: 1.1 for a strong sector (price > 50-day SMA) and 0.9 for a weak one.
     """
     if ticker not in sector_map:
         return 1.0
@@ -271,7 +272,7 @@ def get_sector_strength(ticker):
 # ----------------------------
 def calculate_trade_levels(entry_price, stop_loss_price):
     """
-    Compute the profit target using a 3:1 profit-to-risk ratio.
+    Compute the profit target based on a 3:1 profit-to-risk ratio.
     """
     risk = abs(entry_price - stop_loss_price)
     return entry_price + RISK_REWARD_RATIO * risk
@@ -288,7 +289,7 @@ def generate_breakout_report(bullish_candidates):
             continue
         ml_breakout_prob = compute_lstm_breakout_probability(ticker, info["bullish_count"])
         entry_price = tech_data["current_price"]
-        # Use support as stop-loss if available; else assume a 2% drop.
+        # Use support as stop-loss if available; otherwise assume a 2% drop.
         stop_loss = tech_data["Support"] if tech_data["Support"] > 0 else entry_price * 0.98
         profit_target = calculate_trade_levels(entry_price, stop_loss)
         report_rows.append({
@@ -315,8 +316,8 @@ def main():
     st.markdown("""
     This system combines rule-based filtering with machine learning refinement to detect Quantitative VCP setups.
     You can import a list of filtered stock tickers from TradingView via a CSV file or manually enter them.
-    The system then computes technical indicators, applies a pre-trained LSTM model to output a breakout probability,
-    and suggests trade parameters based on a 3:1 risk-to-reward ratio.
+    The system computes technical indicators (including volume contraction) and uses a pre-trained LSTM model to output a breakout probability.
+    It also suggests trade parameters based on a 3:1 risk-to-reward ratio.
     """)
     
     # Option 1: CSV file uploader (expecting a column named "ticker")
@@ -359,5 +360,6 @@ def main():
             
 if __name__ == "__main__":
     main()
+
 
 
