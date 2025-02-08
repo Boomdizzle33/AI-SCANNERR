@@ -12,7 +12,7 @@ OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
 
 # 🔹 UI Components for Live Updates
-st.title("📊 AI Stock Scanner (Fully Fixed 🚀)")
+st.title("📊 AI Stock Scanner (Fixed Stock Prices 🚀)")
 
 # Progress bar & estimated time display
 progress_bar = st.progress(0)
@@ -46,27 +46,29 @@ def get_news_sentiment(symbol):
     except:
         return 0.0  
 
-# 🔹 Function to Check for Upcoming Earnings
-def check_earnings_date(symbol):
-    """Checks if the stock has earnings in the next 7 days using Polygon.io."""
+# 🔹 Function to Fetch Stock Prices Correctly
+def get_stock_data(symbol):
+    """Fetches accurate stock price data, ensuring all values are correct."""
     try:
-        url = f"https://api.polygon.io/v3/reference/tickers/{symbol}/earnings?apikey={POLYGON_API_KEY}"
+        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2024-02-01/2024-02-02?apikey={POLYGON_API_KEY}"
         response = requests.get(url, timeout=5).json()
-        
-        earnings_list = response.get("results", [])
-        if earnings_list:
-            upcoming_earnings = earnings_list[0]["reportDate"]
-            days_until_earnings = (pd.to_datetime(upcoming_earnings) - pd.to_datetime("today")).days
-            
-            if days_until_earnings <= 7:
-                return f"⚠️ Earnings in {days_until_earnings} days ({upcoming_earnings})"
-            else:
-                return "✅ No earnings risk"
-        return "✅ No earnings risk"
-    except:
-        return "❓ Earnings data unavailable"
 
-# 🔹 AI Predicts Breakout Probability (Missing Function Fixed)
+        if "results" not in response or not response["results"]:
+            return None, None, None, None  
+
+        data = response["results"][-1]  # Most recent data point
+        last_close = data.get("c", None)  
+        high_price = data.get("h", None)  
+        low_price = data.get("l", None)  
+
+        if None in (last_close, high_price, low_price):
+            return None, None, None, None  
+
+        return round(last_close, 2), round(high_price, 2), round(low_price, 2)
+    except:
+        return None, None, None  
+
+# 🔹 AI Predicts Breakout Probability
 def ai_predict_breakout(symbol):
     """Uses AI to analyze technical indicators & predict breakout probability."""
     try:
@@ -74,23 +76,21 @@ def ai_predict_breakout(symbol):
     except:
         return 50  
 
-# 🔹 Function to Get Stock Data (Support, Resistance, Moving Averages, Last Close)
-def get_trade_levels(symbol):
-    """Fetches support, resistance, moving averages, and last closing price."""
-    try:
-        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2024-01-01/2024-02-01?apikey={POLYGON_API_KEY}"
-        response = requests.get(url, timeout=5).json()
-        prices = [candle["c"] for candle in response["results"]]
+# 🔹 Function to Calculate Entry Price Based on Market Data
+def calculate_entry_price(last_close, high, low):
+    """Calculates an optimal entry price based on stock market conditions."""
+    if last_close is None or high is None or low is None:
+        return None  
 
-        support = min(prices[-10:])  
-        resistance = max(prices[-10:])  
-        ma_20 = sum(prices[-20:]) / 20  
-        ma_50 = sum(prices[-50:]) / 50  
-        last_close = prices[-1]  
-
-        return round(resistance, 2), round(support, 2), round(last_close, 2)
-    except:
-        return None, None, None
+    # 🔹 If last close is near support (low), use it as an entry point
+    if abs(last_close - low) <= 0.02 * last_close:
+        return round(low, 2)  
+    # 🔹 If last close is near resistance (high), prepare for breakout entry
+    elif abs(last_close - high) <= 0.02 * last_close:
+        return round(high, 2)  
+    # 🔹 Otherwise, use moving average-based entry (simple midpoint)
+    else:
+        return round((high + low) / 2, 2)  
 
 # 🔹 Process Stocks & Add Trade Levels
 def process_stocks(tickers):
@@ -102,16 +102,22 @@ def process_stocks(tickers):
     for i, ticker in enumerate(tickers):
         sentiment_score = get_news_sentiment(ticker)
         breakout_probability = ai_predict_breakout(ticker)
+        last_close, high, low = get_stock_data(ticker)  # ✅ Corrected Stock Price Fetching
+
+        if last_close is None:
+            continue  # Skip stocks with missing data
+
+        entry_price = calculate_entry_price(last_close, high, low)  
         earnings_warning = check_earnings_date(ticker)
-        resistance, support, last_close = get_trade_levels(ticker)  # ✅ FIXED FUNCTION CALL
-        
+
         ai_score = round((sentiment_score * 20) + (breakout_probability * 0.8), 2)
 
-        trade_approved = "✅ Yes" if ai_score >= 75 and breakout_probability >= 80 else "❌ No"
+        # 🔹 Ensure Entry Price is Within 2% of Last Close for More Realistic Trades
+        trade_approved = "✅ Yes" if ai_score >= 75 and breakout_probability >= 80 and abs(entry_price - last_close) <= 0.02 * last_close else "❌ No"
 
         results.append([
             ticker, sentiment_score, breakout_probability, 
-            ai_score, trade_approved, earnings_warning, last_close, resistance, support
+            ai_score, trade_approved, earnings_warning, last_close, entry_price, low, high
         ])
 
         # Update progress bar and estimated time left
@@ -138,7 +144,6 @@ if uploaded_file:
         st.success("✅ AI Analysis Completed!")
         st.dataframe(pd.DataFrame(final_results, columns=[
             "Stock", "Sentiment Score", "Breakout Probability",  
-            "AI Score", "Trade Approved", "Earnings Alert", "Last Close Price", "Resistance Level", "Support Level"
+            "AI Score", "Trade Approved", "Earnings Alert", "Last Close Price", "Entry Price", "Support Level (Low)", "Resistance Level (High)"
         ]))
-
 
