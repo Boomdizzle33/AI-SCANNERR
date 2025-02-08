@@ -4,45 +4,46 @@ import pandas as pd
 import time
 import datetime
 import logging
-
-# -------------------------------------------------------------------
-# Import numpy and patch NaN before importing pandas_ta
-# -------------------------------------------------------------------
 import numpy as np
-# Patch: Some versions of pandas_ta try to import NaN from numpy,
-# which may not be available. This patch ensures that np.NaN exists.
+
+# -----------------------------------------------------------------------------
+# Patch for NumPy: Ensure np.NaN exists for libraries like pandas_ta
+# -----------------------------------------------------------------------------
 np.NaN = np.nan
 
 import pandas_ta as ta  # For technical indicators (if needed)
 from duckduckgo_search import DDGS
 import openai
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Logging Setup
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Load API Keys Securely from Streamlit Secrets
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 POLYGON_API_KEY = st.secrets["polygon"]["api_key"]
 OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 
 openai.api_key = OPENAI_API_KEY  # Set OpenAI API key
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Streamlit UI Setup
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 st.title("📊 AI Stock Scanner (No More Errors! 🚀)")
 progress_bar = st.progress(0)
 time_remaining_text = st.empty()
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Function: Fetch News Sentiment
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def get_news_sentiment(symbol):
-    """Fetches news sentiment for a stock using OpenAI and DuckDuckGo Search."""
+    """
+    Fetches news sentiment for a stock using OpenAI and DuckDuckGo Search.
+    It pulls up to 5 news headlines, builds a prompt, and sends it to OpenAI's API.
+    """
     try:
         ddgs = DDGS()
         # Fetch up to 5 news headlines
@@ -83,11 +84,14 @@ Headlines:
         logger.error(f"Unexpected error for {symbol} in get_news_sentiment: {e}")
         return 0.0
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Function: Fetch Stock Data with Exponential Backoff
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def get_stock_data(symbol):
-    """Fetches accurate stock price data, ensuring all values are correct."""
+    """
+    Fetches accurate stock price data from Polygon.io for the given symbol.
+    Uses exponential backoff to handle rate-limits or transient network issues.
+    """
     url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2024-02-01/2024-02-02?apikey={POLYGON_API_KEY}"
     
     for attempt in range(3):
@@ -121,25 +125,33 @@ def get_stock_data(symbol):
             logger.error(f"Error processing data for {symbol}: {e}")
             return 0, 0, 0
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Function: Check for Upcoming Earnings
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def check_earnings_date(symbol):
-    """Checks if the stock has earnings in the next 7 days using Polygon.io."""
+    """
+    Checks if the stock has earnings in the next 7 days using Polygon.io.
+    If the API returns a 404 error (no earnings data available for the ticker),
+    the function returns a message indicating no earnings risk.
+    """
     url = f"https://api.polygon.io/v3/reference/tickers/{symbol}/earnings?apikey={POLYGON_API_KEY}"
     try:
         response = requests.get(url, timeout=5)
+        # If the endpoint returns 404, treat it as no earnings data available.
+        if response.status_code == 404:
+            return "✅ No earnings risk"
+        
         response.raise_for_status()
         data = response.json()
         earnings_list = data.get("results", [])
         
         if earnings_list:
-            upcoming_earnings = earnings_list[0]["reportDate"]
-            days_until_earnings = (pd.to_datetime(upcoming_earnings) - pd.to_datetime("today")).days
-            if days_until_earnings <= 7:
-                return f"⚠️ Earnings in {days_until_earnings} days ({upcoming_earnings})"
-            else:
-                return "✅ No earnings risk"
+            # Get the upcoming earnings report date (if available)
+            upcoming_earnings = earnings_list[0].get("reportDate")
+            if upcoming_earnings:
+                days_until_earnings = (pd.to_datetime(upcoming_earnings) - pd.to_datetime("today")).days
+                if days_until_earnings <= 7:
+                    return f"⚠️ Earnings in {days_until_earnings} days ({upcoming_earnings})"
         return "✅ No earnings risk"
     except requests.exceptions.RequestException as e:
         logger.error(f"Network error checking earnings for {symbol}: {e}")
@@ -148,11 +160,12 @@ def check_earnings_date(symbol):
         logger.error(f"Error processing earnings data for {symbol}: {e}")
         return "❓ Earnings data unavailable"
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Function: AI Predicts Breakout Probability (Implemented)
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def ai_predict_breakout(symbol):
-    """Uses historical technical indicators to predict breakout probability.
+    """
+    Uses historical technical indicators to predict breakout probability.
     
     This function fetches the past 30 days of daily aggregated data for the given symbol,
     computes the 20-day SMA, identifies the highest closing price in that period, and calculates 
@@ -230,11 +243,14 @@ def ai_predict_breakout(symbol):
         logger.error(f"Error predicting breakout for {symbol}: {e}")
         return 50  # Default neutral probability on error
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Function: Calculate Entry Price Based on Market Data
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def calculate_entry_price(last_close, high, low):
-    """Calculates an optimal entry price based on stock market conditions."""
+    """
+    Calculates an optimal entry price based on the stock market conditions.
+    Uses the day's high and low to determine a fair entry price.
+    """
     if last_close == 0 or high == 0 or low == 0:
         return 0  # Default value
     if abs(last_close - low) <= 0.02 * last_close:
@@ -244,11 +260,15 @@ def calculate_entry_price(last_close, high, low):
     else:
         return round((high + low) / 2, 2)
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Function: Process Stocks & Update UI
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def process_stocks(tickers):
-    """Processes stocks, filters weak setups, and checks for upcoming earnings reports."""
+    """
+    Processes a list of tickers by fetching sentiment, breakout probability,
+    stock data, earnings info, and then computes an overall AI score.
+    The progress bar and estimated time remaining are updated in the UI.
+    """
     results = []
     total_stocks = len(tickers)
     start_time = time.time()
@@ -279,9 +299,9 @@ def process_stocks(tickers):
 
     return results
 
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # File Upload & Scanner Execution
-# -------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 uploaded_file = st.file_uploader("Upload TradingView CSV File", type=["csv"])
 if uploaded_file:
     try:
