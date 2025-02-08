@@ -89,10 +89,13 @@ Headlines:
 # -----------------------------------------------------------------------------
 def get_stock_data(symbol):
     """
-    Fetches accurate stock price data from Polygon.io for the given symbol.
-    Uses exponential backoff to handle rate-limits or transient network issues.
+    Fetches the most recent (previous trading day's) stock price data from Polygon.io
+    for the given symbol using the "/prev" endpoint.
+    
+    Returns a tuple: (last_close, high_price, low_price).
     """
-    url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2024-02-01/2024-02-02?apikey={POLYGON_API_KEY}"
+    # Use the '/prev' endpoint to get the previous trading day's aggregate data.
+    url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/prev?apikey={POLYGON_API_KEY}"
     
     for attempt in range(3):
         try:
@@ -109,8 +112,8 @@ def get_stock_data(symbol):
                 logger.info(f"No results found for {symbol}.")
                 return 0, 0, 0  # Default values
 
-            # Use the most recent data point
-            result = data["results"][-1]
+            # The /prev endpoint returns a single aggregated result.
+            result = data["results"][0]
             last_close = result.get("c", 0)
             high_price = result.get("h", 0)
             low_price = result.get("l", 0)
