@@ -7,13 +7,13 @@ import openai
 import ta  # Technical analysis library; install via pip install ta
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from duckduckgo_search import DDGS  # New import for DuckDuckGo news
+from duckduckgo_search import DDGS  # Import DDGS from duckduckgo_search
 
 # ----------------------------
 # CONFIGURATION & API KEYS
 # ----------------------------
 # Store these keys securely. In Streamlit Cloud, set these in your Secrets.
-POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key (still used for historical data)
+POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]        # Your OpenAI API key
 openai.api_key = OPENAI_API_KEY
 
@@ -42,11 +42,11 @@ def fetch_stock_news(ticker, start_date, end_date):
     """
     query = f"{ticker} news"
     with DDGS() as ddgs:
-        # Use time='w' to fetch news over the past week and then filter manually
-        results = ddgs.news(query, time='w', max_results=20)
+        # Removed the 'time' keyword argument since it's not supported.
+        results = ddgs.news(query, max_results=20)
     filtered_results = []
     for article in results:
-        # Expecting the article dictionary to have a "date" field in "YYYY-MM-DD" format
+        # Expecting the article dictionary to have a "date" field in "YYYY-MM-DD" format.
         if "date" in article:
             try:
                 article_date = datetime.datetime.strptime(article["date"], "%Y-%m-%d")
@@ -54,7 +54,7 @@ def fetch_stock_news(ticker, start_date, end_date):
                 if start_date <= article_date < end_date:
                     filtered_results.append(article)
             except Exception as e:
-                # If date parsing fails, include the article anyway
+                # If date parsing fails, include the article anyway.
                 filtered_results.append(article)
         else:
             filtered_results.append(article)
@@ -193,7 +193,6 @@ def load_pretrained_lstm_model():
         return model
     except Exception as e:
         st.warning("Pre-trained LSTM model not found. Using a dummy model for demonstration.")
-        # Dummy model always returns a 0.5 probability
         class DummyModel:
             def predict(self, X):
                 return np.array([[0.5]])
