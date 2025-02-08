@@ -13,8 +13,6 @@ openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
 
 # 🔹 UI Components for Live Updates
 st.title("📊 AI Stock Scanner (Fully AI-Powered 🚀)")
-progress_bar = st.progress(0)
-time_remaining_text = st.empty()  
 
 # 🔹 Function to Fetch News Sentiment
 def get_news_sentiment(symbol):
@@ -64,61 +62,70 @@ def check_earnings_date(symbol):
     except:
         return "❓ Earnings data unavailable"
 
-# 🔹 AI Predicts Breakout Probability
-def ai_predict_breakout(symbol):
-    """Uses AI to analyze technical indicators & predict breakout probability."""
+# 🔹 Function to Get Support & Resistance Levels
+def get_support_resistance(symbol):
+    """Fetches recent support & resistance levels using price data."""
     try:
         url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2024-01-01/2024-02-01?apikey={POLYGON_API_KEY}"
         response = requests.get(url, timeout=5).json()
         prices = [candle["c"] for candle in response["results"]]
 
-        ma_20 = sum(prices[-20:]) / 20
-        ma_50 = sum(prices[-50:]) / 50
-        rsi = sum([prices[i] - prices[i - 1] for i in range(1, len(prices)) if prices[i] > prices[i - 1]]) / 14 * 100
-        macd = ma_20 - ma_50
-        atr = max(prices[-10:]) - min(prices[-10:])
-        
-        ai_input = f"""
-        Predict the probability of a breakout for {symbol} based on:
-        - 20-day MA: {ma_20}
-        - 50-day MA: {ma_50}
-        - RSI: {rsi}
-        - MACD: {macd}
-        - ATR: {atr}
-        Provide a probability (0-100). Respond with only a single number.
-        """
+        support = min(prices[-10:])  
+        resistance = max(prices[-10:])  
 
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        data = {"model": "gpt-4-turbo", "messages": [{"role": "user", "content": ai_input}], "max_tokens": 10}
-
-        response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
-        response.raise_for_status()
-        return max(0, min(100, float(response.json()["choices"][0]["message"]["content"].strip())))
+        return round(support, 2), round(resistance, 2)
     except:
-        return 50  # Default to neutral probability
+        return None, None
+
+# 🔹 Function to Calculate ATR-Based Stop-Loss
+def calculate_atr_stop(symbol):
+    """Calculates an ATR-based stop-loss instead of a fixed percentage."""
+    try:
+        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2024-01-01/2024-02-01?apikey={POLYGON_API_KEY}"
+        response = requests.get(url, timeout=5).json()
+        prices = [candle["c"] for candle in response["results"]]
+
+        tr = [max(prices[i] - prices[i - 1], abs(prices[i] - prices[i - 2])) for i in range(2, len(prices))]
+        atr = sum(tr[-14:]) / 14 if len(tr) > 0 else 1  
+
+        return atr * 1.5  # Use 1.5x ATR for stop-loss
+    except:
+        return None  
+
+# 🔹 Function to Calculate Entry, Stop-Loss & Profit Target
+def calculate_trade_levels(symbol):
+    """Determines best entry, stop-loss, and profit target based on AI prediction."""
+    support, resistance = get_support_resistance(symbol)
+    atr_stop = calculate_atr_stop(symbol)
+
+    if support is None or resistance is None or atr_stop is None:
+        return None, None, None  
+
+    entry_price = resistance  # Enter at resistance level if AI predicts breakout
+    stop_loss = entry_price - atr_stop  # ATR-based stop-loss
+    profit_target = entry_price + (entry_price - stop_loss) * 3  # 3:1 reward ratio
+
+    return round(entry_price, 2), round(stop_loss, 2), round(profit_target, 2)
 
 # 🔹 Process Stocks & Add Trade Levels
 def process_stocks(tickers):
     """Processes stocks, filters weak setups, and checks for upcoming earnings reports."""
     results = []
-    total_stocks = len(tickers)
-    start_time = time.time()
 
-    for i, ticker in enumerate(tickers):
+    for ticker in tickers:
         sentiment_score = get_news_sentiment(ticker)
         breakout_probability = ai_predict_breakout(ticker)
-        earnings_warning = check_earnings_date(ticker)  # NEW: Earnings Check
+        earnings_warning = check_earnings_date(ticker)
+        entry_price, stop_loss, profit_target = calculate_trade_levels(ticker)
 
-        ai_score = (sentiment_score * 20) + (breakout_probability * 80)
+        ai_score = round((sentiment_score * 20) + (breakout_probability * 0.8), 2)  # FIXED SCALING
 
         trade_approved = "✅ Yes" if ai_score >= 75 and breakout_probability >= 80 else "❌ No"
 
         results.append([
             ticker, sentiment_score, breakout_probability, 
-            ai_score, trade_approved, earnings_warning
+            ai_score, trade_approved, earnings_warning, entry_price, stop_loss, profit_target
         ])
-
-        progress_bar.progress((i + 1) / total_stocks)
 
     return results
 
@@ -135,9 +142,8 @@ if uploaded_file:
         st.success("✅ AI Analysis Completed!")
         st.dataframe(pd.DataFrame(final_results, columns=[
             "Stock", "Sentiment Score", "Breakout Probability",  
-            "AI Score", "Trade Approved", "Earnings Alert"
+            "AI Score", "Trade Approved", "Earnings Alert", "Entry Price", "Stop-Loss", "Profit Target"
         ]))
-
 
 
 
