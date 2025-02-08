@@ -2,8 +2,10 @@ streamlit
 requests
 pandas
 numpy
+openai
 ta
 tensorflow
-openai
+duckduckgo_search
+
 
 
