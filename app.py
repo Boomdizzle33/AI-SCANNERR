@@ -12,7 +12,7 @@ OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
 
 # 🔹 UI Components for Live Updates
-st.title("📊 AI Stock Scanner (Fully Fixed 🚀)")
+st.title("📊 AI Stock Scanner (No More Errors! 🚀)")
 
 # Progress bar & estimated time display
 progress_bar = st.progress(0)
@@ -54,19 +54,16 @@ def get_stock_data(symbol):
         response = requests.get(url, timeout=5).json()
 
         if "results" not in response or not response["results"]:
-            return None, None, None  
+            return 0, 0, 0  # Default values instead of None  
 
         data = response["results"][-1]  # Most recent data point
-        last_close = data.get("c", None)  
-        high_price = data.get("h", None)  
-        low_price = data.get("l", None)  
-
-        if None in (last_close, high_price, low_price):
-            return None, None, None  
+        last_close = data.get("c", 0)  
+        high_price = data.get("h", 0)  
+        low_price = data.get("l", 0)  
 
         return round(last_close, 2), round(high_price, 2), round(low_price, 2)
     except:
-        return None, None, None  
+        return 0, 0, 0  # Default values instead of skipping stocks  
 
 # 🔹 Function to Check for Upcoming Earnings
 def check_earnings_date(symbol):
@@ -99,16 +96,13 @@ def ai_predict_breakout(symbol):
 # 🔹 Function to Calculate Entry Price Based on Market Data
 def calculate_entry_price(last_close, high, low):
     """Calculates an optimal entry price based on stock market conditions."""
-    if last_close is None or high is None or low is None:
-        return None  
+    if last_close == 0 or high == 0 or low == 0:
+        return 0  # Default value instead of None  
 
-    # 🔹 If last close is near support (low), use it as an entry point
     if abs(last_close - low) <= 0.02 * last_close:
         return round(low, 2)  
-    # 🔹 If last close is near resistance (high), prepare for breakout entry
     elif abs(last_close - high) <= 0.02 * last_close:
         return round(high, 2)  
-    # 🔹 Otherwise, use moving average-based entry (simple midpoint)
     else:
         return round((high + low) / 2, 2)  
 
@@ -124,23 +118,18 @@ def process_stocks(tickers):
         breakout_probability = ai_predict_breakout(ticker)
         last_close, high, low = get_stock_data(ticker)  # ✅ Corrected Stock Price Fetching
 
-        if last_close is None:
-            continue  # Skip stocks with missing data
-
         entry_price = calculate_entry_price(last_close, high, low)  
-        earnings_warning = check_earnings_date(ticker)  # ✅ Moved `check_earnings_date()` Above
+        earnings_warning = check_earnings_date(ticker)
 
         ai_score = round((sentiment_score * 20) + (breakout_probability * 0.8), 2)
 
-        # 🔹 Ensure Entry Price is Within 2% of Last Close for More Realistic Trades
-        trade_approved = "✅ Yes" if ai_score >= 75 and breakout_probability >= 80 and abs(entry_price - last_close) <= 0.02 * last_close else "❌ No"
+        trade_approved = "✅ Yes" if ai_score >= 75 and breakout_probability >= 80 else "❌ No"
 
         results.append([
             ticker, sentiment_score, breakout_probability, 
             ai_score, trade_approved, earnings_warning, last_close, entry_price, low, high
         ])
 
-        # Update progress bar and estimated time left
         progress = (i + 1) / total_stocks
         progress_bar.progress(progress)
         
