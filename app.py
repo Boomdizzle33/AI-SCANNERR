@@ -1,329 +1,363 @@
 import streamlit as st
 import requests
 import pandas as pd
-import time
-import datetime
-import logging
 import numpy as np
-
-# -----------------------------------------------------------------------------
-# Patch for NumPy: Ensure np.NaN exists for libraries like pandas_ta
-# -----------------------------------------------------------------------------
-np.NaN = np.nan
-
-import pandas_ta as ta  # For technical indicators (if needed)
-from duckduckgo_search import DDGS
+import datetime
 import openai
+import ta  # Install with: pip install ta
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 
-# -----------------------------------------------------------------------------
-# Logging Setup
-# -----------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# ----------------------------
+# CONFIGURATION & API KEYS
+# ----------------------------
+# Store these keys securely. In Streamlit Cloud, set these in your Secrets.
+POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]        # Your OpenAI API key
+openai.api_key = OPENAI_API_KEY
 
-# -----------------------------------------------------------------------------
-# Load API Keys Securely from Streamlit Secrets
-# -----------------------------------------------------------------------------
-POLYGON_API_KEY = st.secrets["polygon"]["api_key"]
-OPENAI_API_KEY = st.secrets["openai"]["api_key"]
+# Risk management parameters
+RISK_PERCENTAGE = 0.02   # 2% risk per trade
+RISK_REWARD_RATIO = 3    # 3:1 profit to risk
 
-openai.api_key = OPENAI_API_KEY  # Set OpenAI API key
+# ----------------------------
+# SECTOR MAPPING (for demonstration)
+# ----------------------------
+sector_map = {
+    "AAPL": "XLK",
+    "MSFT": "XLK",
+    "GOOGL": "XLK",
+    "AMZN": "XLY",
+    "TSLA": "XLY"
+}
 
-# -----------------------------------------------------------------------------
-# Streamlit UI Setup
-# -----------------------------------------------------------------------------
-st.title("📊 AI Stock Scanner (No More Errors! 🚀)")
-progress_bar = st.progress(0)
-time_remaining_text = st.empty()
-
-# -----------------------------------------------------------------------------
-# Function: Fetch News Sentiment
-# -----------------------------------------------------------------------------
-def get_news_sentiment(symbol):
+# ----------------------------
+# STEP 1: Rule-Based Filtering via News Sentiment
+# ----------------------------
+def fetch_stock_news(ticker, date):
     """
-    Fetches news sentiment for a stock using OpenAI and DuckDuckGo Search.
-    It pulls up to 5 news headlines, builds a prompt, and sends it to OpenAI's API.
+    Fetch news for a given stock ticker for today's trading session from Polygon.io.
     """
-    try:
-        ddgs = DDGS()
-        # Fetch up to 5 news headlines
-        headlines = [result["title"] for result in ddgs.news(symbol, max_results=5)]
-        
-        if not headlines:
-            logger.info(f"No headlines found for {symbol}.")
-            return 0.0  
-
-        news_text = "\n".join(headlines)
-        prompt = f"""
-Analyze the sentiment of these stock news headlines for {symbol}.
-Assign a sentiment score between -1.0 (very negative) and 1.0 (very positive).
-Respond with only a single number.
-Headlines:
-{news_text}
-"""
-        headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        data = {
-            "model": "gpt-4-turbo",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 10
-        }
-
-        response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
-        response.raise_for_status()
-        result_text = response.json()["choices"][0]["message"]["content"].strip()
-        sentiment_value = float(result_text)
-        # Ensure the sentiment is within [-1.0, 1.0]
-        return max(-1.0, min(1.0, sentiment_value))
-    except (requests.exceptions.RequestException, ValueError) as e:
-        logger.error(f"Error fetching sentiment for {symbol}: {e}")
-        return 0.0
-    except Exception as e:
-        logger.error(f"Unexpected error for {symbol} in get_news_sentiment: {e}")
-        return 0.0
-
-# -----------------------------------------------------------------------------
-# Function: Fetch Stock Data with Exponential Backoff
-# -----------------------------------------------------------------------------
-def get_stock_data(symbol):
-    """
-    Fetches the most recent (previous trading day's) stock price data from Polygon.io
-    for the given symbol using the "/prev" endpoint.
-    
-    Returns a tuple: (last_close, high_price, low_price).
-    """
-    # Use the '/prev' endpoint to get the previous trading day's aggregate data.
-    url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/prev?apikey={POLYGON_API_KEY}"
-    
-    for attempt in range(3):
-        try:
-            response = requests.get(url, timeout=5)
-            # Handle rate-limit (HTTP 429) errors
-            if response.status_code == 429:
-                st.warning(f"Rate limit reached for {symbol}. Retrying (attempt {attempt + 1})...")
-                time.sleep(2 ** attempt)
-                continue
-            response.raise_for_status()
-            
-            data = response.json()
-            if "results" not in data or not data["results"]:
-                logger.info(f"No results found for {symbol}.")
-                return 0, 0, 0  # Default values
-
-            # The /prev endpoint returns a single aggregated result.
-            result = data["results"][0]
-            last_close = result.get("c", 0)
-            high_price = result.get("h", 0)
-            low_price = result.get("l", 0)
-
-            return round(last_close, 2), round(high_price, 2), round(low_price, 2)
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error fetching data for {symbol}: {e}")
-            if attempt == 2:
-                return 0, 0, 0
-            time.sleep(2 ** attempt)
-        except Exception as e:
-            logger.error(f"Error processing data for {symbol}: {e}")
-            return 0, 0, 0
-
-# -----------------------------------------------------------------------------
-# Function: Check for Upcoming Earnings
-# -----------------------------------------------------------------------------
-def check_earnings_date(symbol):
-    """
-    Checks if the stock has earnings in the next 7 days using Polygon.io.
-    If the API returns a 404 error (no earnings data available for the ticker),
-    the function returns a message indicating no earnings risk.
-    """
-    url = f"https://api.polygon.io/v3/reference/tickers/{symbol}/earnings?apikey={POLYGON_API_KEY}"
-    try:
-        response = requests.get(url, timeout=5)
-        # If the endpoint returns 404, treat it as no earnings data available.
-        if response.status_code == 404:
-            return "✅ No earnings risk"
-        
-        response.raise_for_status()
-        data = response.json()
-        earnings_list = data.get("results", [])
-        
-        if earnings_list:
-            # Get the upcoming earnings report date (if available)
-            upcoming_earnings = earnings_list[0].get("reportDate")
-            if upcoming_earnings:
-                days_until_earnings = (pd.to_datetime(upcoming_earnings) - pd.to_datetime("today")).days
-                if days_until_earnings <= 7:
-                    return f"⚠️ Earnings in {days_until_earnings} days ({upcoming_earnings})"
-        return "✅ No earnings risk"
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Network error checking earnings for {symbol}: {e}")
-        return "❓ Earnings data unavailable"
-    except Exception as e:
-        logger.error(f"Error processing earnings data for {symbol}: {e}")
-        return "❓ Earnings data unavailable"
-
-# -----------------------------------------------------------------------------
-# Function: AI Predicts Breakout Probability (Implemented)
-# -----------------------------------------------------------------------------
-def ai_predict_breakout(symbol):
-    """
-    Uses historical technical indicators to predict breakout probability.
-    
-    This function fetches the past 30 days of daily aggregated data for the given symbol,
-    computes the 20-day SMA, identifies the highest closing price in that period, and calculates 
-    the volatility (std. deviation of daily returns). It then combines these measures into a 
-    breakout probability between 0 and 100.
-    """
-    try:
-        # Define date range: last 30 days
-        end_date = datetime.datetime.today()
-        start_date = end_date - datetime.timedelta(days=30)
-        end_date_str = end_date.strftime("%Y-%m-%d")
-        start_date_str = start_date.strftime("%Y-%m-%d")
-        
-        # Build the URL for Polygon.io's aggregates endpoint (daily data)
-        url = (
-            f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
-            f"{start_date_str}/{end_date_str}?apikey={POLYGON_API_KEY}"
-        )
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        
-        if "results" not in data or not data["results"]:
-            logger.info(f"No historical data available for {symbol}.")
-            return 50  # Return a neutral probability
-        
-        results = data["results"]
-        # Sort by timestamp ascending
-        results.sort(key=lambda x: x["t"])
-        
-        # Extract closing prices (skip any zero values)
-        closes = [r.get("c", 0) for r in results if r.get("c", 0) != 0]
-        if not closes:
-            return 50
-        
-        # Get the most recent closing price
-        current_close = closes[-1]
-        
-        # Calculate the 20-day simple moving average (SMA)
-        period = min(20, len(closes))
-        sma20 = sum(closes[-period:]) / period
-        
-        # Determine the historical high over the period
-        historical_max = max(closes)
-        
-        # Start with a base probability (neutral score)
-        probability = 50
-        
-        # Factor 1: Trend bias (if current price is above the SMA, add a bonus)
-        if current_close > sma20:
-            probability += 15
-        
-        # Factor 2: Proximity to historical high (closer to the max suggests a breakout)
-        if historical_max > 0:
-            gap_percentage = (historical_max - current_close) / historical_max
-            if gap_percentage <= 0.02:
-                probability += 20
-            elif gap_percentage <= 0.05:
-                probability += 10
-        
-        # Factor 3: Volatility adjustment (standard deviation of daily returns)
-        if len(closes) >= 2:
-            returns = np.diff(np.array(closes)) / np.array(closes[:-1])
-            volatility = np.std(returns)
-            if volatility < 0.02:
-                probability += 10
-            elif volatility > 0.05:
-                probability -= 10
-        
-        # Ensure the probability is between 0 and 100
-        probability = max(0, min(100, probability))
-        return round(probability, 2)
-    
-    except Exception as e:
-        logger.error(f"Error predicting breakout for {symbol}: {e}")
-        return 50  # Default neutral probability on error
-
-# -----------------------------------------------------------------------------
-# Function: Calculate Entry Price Based on Market Data
-# -----------------------------------------------------------------------------
-def calculate_entry_price(last_close, high, low):
-    """
-    Calculates an optimal entry price based on the stock market conditions.
-    Uses the day's high and low to determine a fair entry price.
-    """
-    if last_close == 0 or high == 0 or low == 0:
-        return 0  # Default value
-    if abs(last_close - low) <= 0.02 * last_close:
-        return round(low, 2)
-    elif abs(last_close - high) <= 0.02 * last_close:
-        return round(high, 2)
+    url = "https://api.polygon.io/v2/reference/news"
+    params = {
+        "ticker": ticker,
+        "published_utc.gte": date.strftime("%Y-%m-%dT00:00:00Z"),
+        "published_utc.lt": (date + datetime.timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z"),
+        "apiKey": POLYGON_API_KEY,
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json().get("results", [])
     else:
-        return round((high + low) / 2, 2)
+        st.error(f"Error fetching news for {ticker}")
+        return []
 
-# -----------------------------------------------------------------------------
-# Function: Process Stocks & Update UI
-# -----------------------------------------------------------------------------
-def process_stocks(tickers):
+def analyze_sentiment(article_content):
     """
-    Processes a list of tickers by fetching sentiment, breakout probability,
-    stock data, earnings info, and then computes an overall AI score.
-    The progress bar and estimated time remaining are updated in the UI.
+    Use OpenAI API to analyze the sentiment of a news article excerpt.
+    The prompt instructs the model to analyze tone, language, and context,
+    and then respond with one word only: bullish, bearish, or neutral.
     """
-    results = []
-    total_stocks = len(tickers)
-    start_time = time.time()
-
-    for i, ticker in enumerate(tickers):
-        # Fetch and compute data for each ticker
-        sentiment_score = get_news_sentiment(ticker)
-        breakout_probability = ai_predict_breakout(ticker)
-        last_close, high, low = get_stock_data(ticker)
-        entry_price = calculate_entry_price(last_close, high, low)
-        earnings_warning = check_earnings_date(ticker)
-        ai_score = round((sentiment_score * 20) + (breakout_probability * 0.8), 2)
-        trade_approved = "✅ Yes" if ai_score >= 75 and breakout_probability >= 80 else "❌ No"
-
-        results.append([
-            ticker, sentiment_score, breakout_probability, 
-            ai_score, trade_approved, earnings_warning,
-            last_close, entry_price, low, high
-        ])
-
-        # Update progress bar and estimated time remaining
-        progress = (i + 1) / total_stocks
-        progress_bar.progress(progress)
-        elapsed_time = time.time() - start_time
-        estimated_total_time = elapsed_time / progress if progress > 0 else 0
-        time_remaining = estimated_total_time - elapsed_time
-        time_remaining_text.text(f"⏳ Estimated Time Left: {time_remaining:.2f} seconds")
-
-    return results
-
-# -----------------------------------------------------------------------------
-# File Upload & Scanner Execution
-# -----------------------------------------------------------------------------
-uploaded_file = st.file_uploader("Upload TradingView CSV File", type=["csv"])
-if uploaded_file:
+    prompt = (
+        "Analyze the following news article excerpt and determine its overall sentiment. "
+        "Consider the tone, language, and context of the article. "
+        "Based on your analysis, respond with one word only: bullish, bearish, or neutral.\n\n"
+        f"News article excerpt:\n{article_content}\n\n"
+        "Answer:"
+    )
     try:
-        stock_list = pd.read_csv(uploaded_file)
-        # Validate CSV format
-        if "Ticker" not in stock_list.columns:
-            st.error("CSV file must contain a 'Ticker' column.")
-        else:
-            tickers = stock_list["Ticker"].dropna().tolist()
-            if st.button("Run AI Scanner"):
-                st.write("🔍 **Scanning Stocks... Please Wait...**")
-                final_results = process_stocks(tickers)
-                st.success("✅ AI Analysis Completed!")
-                results_df = pd.DataFrame(final_results, columns=[
-                    "Stock", "Sentiment Score", "Breakout Probability",  
-                    "AI Score", "Trade Approved", "Earnings Alert",
-                    "Last Close Price", "Entry Price", "Support Level (Low)", "Resistance Level (High)"
-                ])
-                st.dataframe(results_df)
+        response = openai.Completion.create(
+            engine="text-davinci-003",
+            prompt=prompt,
+            max_tokens=5,
+            temperature=0.3,
+        )
+        return response.choices[0].text.strip().lower()
     except Exception as e:
-        st.error(f"Error reading CSV file: {e}")
+        st.error(f"OpenAI API error: {e}")
+        return "neutral"
+
+def scan_for_bullish_stocks(stock_list):
+    """
+    For each stock in the list, check if it has at least 5 bullish news articles today.
+    Returns a dictionary with tickers and a count of bullish articles.
+    """
+    today = datetime.datetime.utcnow()
+    bullish_candidates = {}
+    for ticker in stock_list:
+        articles = fetch_stock_news(ticker, today)
+        bullish_count = 0
+        for article in articles:
+            content = article.get("title", "") + ". " + article.get("description", "")
+            if "bullish" in analyze_sentiment(content):
+                bullish_count += 1
+        if bullish_count >= 5:
+            bullish_candidates[ticker] = {"bullish_count": bullish_count}
+            st.write(f"{ticker} has {bullish_count} bullish articles.")
+    return bullish_candidates
+
+# ----------------------------
+# STEP 2: Feature Engineering for VCP (Technical Analysis & Volume Contraction)
+# ----------------------------
+def fetch_historical_data(ticker, days=180):
+    """
+    Fetch historical daily price data for the given ticker using Polygon.io.
+    """
+    end_date = datetime.datetime.today()
+    start_date = end_date - datetime.timedelta(days=days)
+    url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
+    params = {
+        "adjusted": "true",
+        "sort": "asc",
+        "apiKey": POLYGON_API_KEY
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        df = pd.DataFrame(response.json().get("results", []))
+        if not df.empty:
+            df["t"] = pd.to_datetime(df["t"], unit='ms')
+            df.set_index("t", inplace=True)
+        return df
+    else:
+        st.error(f"Error fetching historical data for {ticker}")
+        return pd.DataFrame()
+
+def compute_volume_trend(df, window=20):
+    """
+    Compute the percentage change of volume relative to a longer-term average.
+    A negative value indicates volume contraction (a key VCP signal).
+    """
+    df["Volume_LongAvg"] = df["v"].rolling(window=window*2).mean()
+    df["Volume_Trend"] = ((df["v"] - df["Volume_LongAvg"]) / df["Volume_LongAvg"]) * 100
+    return df
+
+def perform_technical_analysis(ticker):
+    """
+    Compute technical indicators and volume contraction using historical data.
+    Returns a snapshot (latest row) of key technical values.
+    """
+    df = fetch_historical_data(ticker)
+    if df.empty:
+        return None
+    # Compute technical indicators
+    df["SMA20"] = ta.trend.sma_indicator(df["c"], window=20)
+    df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
+    df["RSI"] = ta.momentum.rsi(df["c"], window=14)
+    df["MACD"] = ta.trend.macd(df["c"])
+    bollinger = ta.volatility.BollingerBands(df["c"], window=20, window_dev=2)
+    df["Bollinger_High"] = bollinger.bollinger_hband()
+    df["Bollinger_Low"] = bollinger.bollinger_lband()
+    df["Support"] = df["c"].rolling(window=20).min()
+    df["Resistance"] = df["c"].rolling(window=20).max()
+    df["Volume_Avg"] = df["v"].rolling(window=20).mean()
+    df["Volume_Spike"] = (df["v"] > (df["Volume_Avg"] * 1.5)).astype(int)
+    df = compute_volume_trend(df)
+    
+    latest = df.iloc[-1]
+    tech_data = {
+        "current_price": latest["c"],
+        "SMA20": latest["SMA20"],
+        "SMA50": latest["SMA50"],
+        "RSI": latest["RSI"],
+        "MACD": latest["MACD"],
+        "Bollinger_High": latest["Bollinger_High"],
+        "Bollinger_Low": latest["Bollinger_Low"],
+        "Support": latest["Support"],
+        "Resistance": latest["Resistance"],
+        "volume_spike": bool(latest["Volume_Spike"]),
+        "Volume_Trend": latest["Volume_Trend"]
+    }
+    return tech_data
+
+# ----------------------------
+# STEP 3: Refinement with Machine Learning (Pre-Trained LSTM Model)
+# ----------------------------
+def load_pretrained_lstm_model():
+    """
+    Load a pre-trained LSTM model from disk.
+    The model should be trained offline on historical data to learn VCP patterns.
+    """
+    try:
+        model = load_model("lstm_vcp_model.h5")
+        st.write("Pre-trained LSTM model loaded.")
+        return model
+    except Exception as e:
+        st.warning("Pre-trained LSTM model not found. Using a dummy model for demonstration.")
+        # Dummy model always returns a 0.5 probability
+        class DummyModel:
+            def predict(self, X):
+                return np.array([[0.5]])
+        return DummyModel()
+
+def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20, breakout_threshold=0.01):
+    """
+    Compute the breakout probability for the stock using the pre-trained LSTM model.
+    The model refines the candidate by capturing nuanced patterns from historical data.
+    """
+    df = fetch_historical_data(ticker)
+    if df.empty:
+        return 0
+    # Calculate technical indicators and volume contraction
+    df["SMA20"] = ta.trend.sma_indicator(df["c"], window=20)
+    df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
+    df["RSI"] = ta.momentum.rsi(df["c"], window=14)
+    df["MACD"] = ta.trend.macd(df["c"])
+    bollinger = ta.volatility.BollingerBands(df["c"], window=20, window_dev=2)
+    df["Bollinger_High"] = bollinger.bollinger_hband()
+    df["Bollinger_Low"] = bollinger.bollinger_lband()
+    df["Support"] = df["c"].rolling(window=20).min()
+    df["Resistance"] = df["c"].rolling(window=20).max()
+    df["Volume_Avg"] = df["v"].rolling(window=20).mean()
+    df["Volume_Spike"] = (df["v"] > (df["Volume_Avg"] * 1.5)).astype(int)
+    df = compute_volume_trend(df)
+    df = df.dropna()
+    if df.empty or len(df) < sequence_length:
+        return 0
+
+    # Define the feature set (VCP-related indicators)
+    feature_cols = ['SMA20', 'SMA50', 'RSI', 'MACD',
+                    'Bollinger_High', 'Bollinger_Low',
+                    'Support', 'Resistance', 'Volume_Spike', 'Volume_Trend']
+    df = df.dropna(subset=feature_cols)
+    if len(df) < sequence_length:
+        return 0
+
+    # Use the last sequence_length days as input for the LSTM model
+    X_latest = df[feature_cols].values[-sequence_length:]
+    X_latest = X_latest.reshape(1, sequence_length, len(feature_cols))
+    
+    lstm_model = load_pretrained_lstm_model()
+    ml_prob = lstm_model.predict(X_latest)[0][0]
+    
+    # Adjust probability using bullish sentiment as a refinement signal
+    sentiment_score = min(1.0, bullish_count / 10.0)
+    final_prob = ml_prob * (1 + 0.3 * sentiment_score)
+    
+    # Further adjust based on overall market and sector strength
+    market_multiplier = 1.1 if get_market_trend() else 0.9
+    sector_multiplier = get_sector_strength(ticker)
+    final_prob = final_prob * market_multiplier * sector_multiplier
+    return min(final_prob, 1.0)
+
+def get_market_trend():
+    """
+    Assess overall market trend using SPY as a proxy.
+    Returns True if bullish (current price > 50-day SMA), otherwise False.
+    """
+    df = fetch_historical_data("SPY", days=100)
+    if df.empty:
+        return True
+    df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
+    latest = df.iloc[-1]
+    return latest["c"] > latest["SMA50"]
+
+def get_sector_strength(ticker):
+    """
+    Evaluate the strength of the stock's sector using its representative ETF.
+    Returns a multiplier (1.1 for strong sector, 0.9 for weak).
+    """
+    if ticker not in sector_map:
+        return 1.0
+    sector_etf = sector_map[ticker]
+    df = fetch_historical_data(sector_etf, days=100)
+    if df.empty:
+        return 1.0
+    df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
+    latest = df.iloc[-1]
+    return 1.1 if latest["c"] > latest["SMA50"] else 0.9
+
+# ----------------------------
+# STEP 4: Trade Setup & Report Generation
+# ----------------------------
+def calculate_trade_levels(entry_price, stop_loss_price):
+    """
+    Compute the profit target using a 3:1 profit-to-risk ratio.
+    """
+    risk = abs(entry_price - stop_loss_price)
+    return entry_price + RISK_REWARD_RATIO * risk
+
+def generate_breakout_report(bullish_candidates):
+    """
+    For each candidate stock, apply technical analysis and ML refinement
+    to generate a report with trade parameters.
+    """
+    report_rows = []
+    for ticker, info in bullish_candidates.items():
+        tech_data = perform_technical_analysis(ticker)
+        if tech_data is None:
+            continue
+        ml_breakout_prob = compute_lstm_breakout_probability(ticker, info["bullish_count"])
+        entry_price = tech_data["current_price"]
+        # Use support as stop-loss if available; else assume a 2% drop.
+        stop_loss = tech_data["Support"] if tech_data["Support"] > 0 else entry_price * 0.98
+        profit_target = calculate_trade_levels(entry_price, stop_loss)
+        report_rows.append({
+            "Stock": ticker,
+            "Updated Entry": round(entry_price, 2),
+            "Stop-Loss": round(stop_loss, 2),
+            "Profit Target": round(profit_target, 2),
+            "Breakout Probability": f"{round(ml_breakout_prob*100, 1)}%",
+            "Capital Flow Strength": "✅" if tech_data["volume_spike"] else "❌",
+            "Volume Trend": f"{round(tech_data['Volume_Trend'], 1)}%"
+        })
+    df_report = pd.DataFrame(report_rows)
+    if not df_report.empty:
+        df_report["Breakout_Prob_Value"] = df_report["Breakout Probability"].str.rstrip("%").astype(float)
+        df_report = df_report.sort_values(by="Breakout_Prob_Value", ascending=False).head(5)
+        df_report.drop("Breakout_Prob_Value", axis=1, inplace=True)
+    return df_report
+
+# ----------------------------
+# STREAMLIT APP LAYOUT
+# ----------------------------
+def main():
+    st.title("Quantitative VCP Trading System with ML Refinement")
+    st.markdown("""
+    This system combines rule-based filtering with machine learning refinement to detect Quantitative VCP setups.
+    You can import a list of filtered stock tickers from TradingView via a CSV file or manually enter them.
+    The system then computes technical indicators, applies a pre-trained LSTM model to output a breakout probability,
+    and suggests trade parameters based on a 3:1 risk-to-reward ratio.
+    """)
+    
+    # Option 1: CSV file uploader (expecting a column named "ticker")
+    uploaded_file = st.file_uploader("Upload CSV file with filtered stock tickers from TradingView", type=["csv"])
+    if uploaded_file is not None:
+        try:
+            df_tickers = pd.read_csv(uploaded_file)
+            stock_list = df_tickers['ticker'].dropna().astype(str).tolist()
+            st.write("Tickers imported:", stock_list)
+        except Exception as e:
+            st.error("Error reading CSV file. Ensure it has a column named 'ticker'.")
+            stock_list = []
+    else:
+        # Option 2: Manual entry
+        stock_list_input = st.text_area("Or enter comma-separated stock tickers", "AAPL, MSFT, GOOGL, AMZN, TSLA")
+        stock_list = [ticker.strip().upper() for ticker in stock_list_input.split(",") if ticker.strip() != ""]
+    
+    if st.button("Scan for Breakout Candidates"):
+        with st.spinner("Scanning for bullish news sentiment..."):
+            bullish_candidates = scan_for_bullish_stocks(stock_list)
+        if not bullish_candidates:
+            st.warning("No stocks met the bullish news criteria.")
+            return
+        
+        st.success("Candidates identified. Running technical analysis and ML breakout prediction...")
+        report_df = generate_breakout_report(bullish_candidates)
+        
+        if report_df.empty:
+            st.warning("No breakout candidates could be generated from the data.")
+        else:
+            st.markdown("### 📌 Top 5 Stocks Likely to Break Out (Quantitative VCP)")
+            st.table(report_df)
+            
+            best_candidate = report_df.iloc[0]
+            weakest_candidate = report_df.iloc[-1] if len(report_df) > 1 else best_candidate
+                
+            st.markdown("#### 📢 Key Takeaways")
+            st.markdown(f"- 🚀 **Best Breakout Candidate: {best_candidate['Stock']}**. Reason: Highest breakout probability at {best_candidate['Breakout Probability']} with strong capital flow and favorable volume contraction (Volume Trend: {best_candidate['Volume Trend']}).")
+            st.markdown(f"- 📉 **Stock Showing Relative Weakness: {weakest_candidate['Stock']}**. Reason: Lower breakout probability relative to peers.")
+            
+if __name__ == "__main__":
+    main()
+
 
