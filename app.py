@@ -34,15 +34,16 @@ sector_map = {
 # ----------------------------
 # STEP 1: Rule-Based Filtering via News Sentiment
 # ----------------------------
-def fetch_stock_news(ticker, date):
+def fetch_stock_news(ticker, start_date, end_date):
     """
-    Fetch news for a given stock ticker for today's trading session from Polygon.io.
+    Fetch news for a given stock ticker between start_date and end_date from Polygon.io.
+    The dates should be timezone-aware datetime objects.
     """
     url = "https://api.polygon.io/v2/reference/news"
     params = {
         "ticker": ticker,
-        "published_utc.gte": date.strftime("%Y-%m-%dT00:00:00Z"),
-        "published_utc.lt": (date + datetime.timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z"),
+        "published_utc.gte": start_date.strftime("%Y-%m-%dT00:00:00Z"),
+        "published_utc.lt": end_date.strftime("%Y-%m-%dT00:00:00Z"),
         "apiKey": POLYGON_API_KEY,
     }
     response = requests.get(url, params=params)
@@ -79,14 +80,16 @@ def analyze_sentiment(article_content):
 
 def scan_for_bullish_stocks(stock_list):
     """
-    For each stock in the list, check if it has at least 5 bullish news articles today.
+    For each stock in the list, check if it has at least 5 bullish news articles over a broader period.
+    In this example, the period is the past 2 days.
     Returns a dictionary with tickers and a count of bullish articles.
     """
-    # Use a timezone-aware UTC datetime object
-    today = datetime.datetime.now(datetime.timezone.utc)
+    # Use timezone-aware UTC datetime objects
+    end_date = datetime.datetime.now(datetime.timezone.utc)
+    start_date = end_date - datetime.timedelta(days=2)  # Broader window: last 2 days
     bullish_candidates = {}
     for ticker in stock_list:
-        articles = fetch_stock_news(ticker, today)
+        articles = fetch_stock_news(ticker, start_date, end_date)
         bullish_count = 0
         for article in articles:
             content = article.get("title", "") + ". " + article.get("description", "")
@@ -336,7 +339,7 @@ def main():
         stock_list = [ticker.strip().upper() for ticker in stock_list_input.split(",") if ticker.strip() != ""]
     
     if st.button("Scan for Breakout Candidates"):
-        with st.spinner("Scanning for bullish news sentiment..."):
+        with st.spinner("Scanning for bullish news sentiment over the past 2 days..."):
             bullish_candidates = scan_for_bullish_stocks(stock_list)
         if not bullish_candidates:
             st.warning("No stocks met the bullish news criteria.")
