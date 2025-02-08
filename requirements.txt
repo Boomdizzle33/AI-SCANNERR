@@ -2,7 +2,8 @@ streamlit
 pandas
 numpy
 requests
-duckduckgo-search
+pandas_ta
+duckduckgo_search
 openai
 
 
