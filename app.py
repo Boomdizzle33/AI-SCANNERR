@@ -1,158 +1,228 @@
 import streamlit as st
 import requests
 import pandas as pd
+import numpy as np
 import time
+import datetime
+import pandas_ta as ta  # For technical indicators
+import logging
 from duckduckgo_search import DDGS
 import openai
 
-# 🔹 Load API Keys Securely from Streamlit Secrets
+# ------------------------------------------------------------------------------
+# Logging Setup
+# ------------------------------------------------------------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------------------
+# Load API Keys Securely from Streamlit Secrets
+# ------------------------------------------------------------------------------
 POLYGON_API_KEY = st.secrets["polygon"]["api_key"]
 OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 
-openai.api_key = OPENAI_API_KEY  # Set OpenAI Key
+openai.api_key = OPENAI_API_KEY
 
-# 🔹 UI Components for Live Updates
-st.title("📊 AI Stock Scanner (No More Errors! 🚀)")
+# ------------------------------------------------------------------------------
+# Global Risk Parameters
+# ------------------------------------------------------------------------------
+# Example account balance; in production, fetch this dynamically.
+account_balance = 10000  
+risk_per_trade = 0.02 * account_balance  # Risk 2% of account per trade
 
-# Progress bar & estimated time display
-progress_bar = st.progress(0)
-time_remaining_text = st.empty()
-
-# 🔹 Function to Fetch News Sentiment
+# ------------------------------------------------------------------------------
+# Function: Get News Sentiment using DuckDuckGo & OpenAI
+# ------------------------------------------------------------------------------
 def get_news_sentiment(symbol):
-    """Fetches news sentiment for a stock using OpenAI and DuckDuckGo Search."""
+    """
+    Fetches news sentiment for a given symbol by gathering headlines and using
+    GPT-4 to generate a sentiment score between -1.0 (very negative) and 1.0 (very positive).
+    """
     try:
         ddgs = DDGS()
         headlines = [result["title"] for result in ddgs.news(symbol, max_results=5)]
-        
         if not headlines:
-            return 0.0  
-
+            logger.info(f"No headlines found for {symbol}.")
+            return 0.0
+        
         news_text = "\n".join(headlines)
         prompt = f"""
-        Analyze the sentiment of these stock news headlines for {symbol}.
-        Assign a sentiment score between -1.0 (very negative) and 1.0 (very positive).
-        Respond with only a single number.
-        Headlines:
-        {news_text}
-        """
-
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
-        data = {"model": "gpt-4-turbo", "messages": [{"role": "user", "content": prompt}], "max_tokens": 10}
-
+Analyze the sentiment of these stock news headlines for {symbol}.
+Assign a sentiment score between -1.0 (very negative) and 1.0 (very positive).
+Respond with only a single number.
+Headlines:
+{news_text}
+"""
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "model": "gpt-4-turbo",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 10
+        }
         response = requests.post("https://api.openai.com/v1/chat/completions", json=data, headers=headers)
         response.raise_for_status()
-        return max(-1.0, min(1.0, float(response.json()["choices"][0]["message"]["content"].strip())))  
-    except:
-        return 0.0  
+        result_text = response.json()["choices"][0]["message"]["content"].strip()
+        sentiment_value = float(result_text)
+        # Clamp sentiment to the range [-1.0, 1.0]
+        return max(-1.0, min(1.0, sentiment_value))
+    except Exception as e:
+        logger.error(f"Error fetching sentiment for {symbol}: {e}")
+        return 0.0
 
-# 🔹 Function to Fetch Stock Prices Correctly
-def get_stock_data(symbol):
-    """Fetches accurate stock price data, ensuring all values are correct."""
-    try:
-        url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/2024-02-01/2024-02-02?apikey={POLYGON_API_KEY}"
-        response = requests.get(url, timeout=5).json()
-
-        if "results" not in response or not response["results"]:
-            return 0, 0, 0  # Default values instead of None  
-
-        data = response["results"][-1]  # Most recent data point
-        last_close = data.get("c", 0)  
-        high_price = data.get("h", 0)  
-        low_price = data.get("l", 0)  
-
-        return round(last_close, 2), round(high_price, 2), round(low_price, 2)
-    except:
-        return 0, 0, 0  # Default values instead of skipping stocks  
-
-# 🔹 Function to Check for Upcoming Earnings
-def check_earnings_date(symbol):
-    """Checks if the stock has earnings in the next 7 days using Polygon.io."""
-    try:
-        url = f"https://api.polygon.io/v3/reference/tickers/{symbol}/earnings?apikey={POLYGON_API_KEY}"
-        response = requests.get(url, timeout=5).json()
-        
-        earnings_list = response.get("results", [])
-        if earnings_list:
-            upcoming_earnings = earnings_list[0]["reportDate"]
-            days_until_earnings = (pd.to_datetime(upcoming_earnings) - pd.to_datetime("today")).days
-            
-            if days_until_earnings <= 7:
-                return f"⚠️ Earnings in {days_until_earnings} days ({upcoming_earnings})"
-            else:
-                return "✅ No earnings risk"
-        return "✅ No earnings risk"
-    except:
-        return "❓ Earnings data unavailable"
-
-# 🔹 AI Predicts Breakout Probability
+# ------------------------------------------------------------------------------
+# Function: Placeholder AI Breakout Prediction
+# ------------------------------------------------------------------------------
 def ai_predict_breakout(symbol):
-    """Uses AI to analyze technical indicators & predict breakout probability."""
+    """
+    Placeholder for breakout prediction. In a real model, you would
+    incorporate technical analysis signals here.
+    """
     try:
-        return 80  # Placeholder for now
-    except:
-        return 50  
+        # Replace with more robust technical analysis as needed.
+        return 80  # Example: fixed score (0-100)
+    except Exception as e:
+        logger.error(f"Error predicting breakout for {symbol}: {e}")
+        return 50
 
-# 🔹 Function to Calculate Entry Price Based on Market Data
-def calculate_entry_price(last_close, high, low):
-    """Calculates an optimal entry price based on stock market conditions."""
-    if last_close == 0 or high == 0 or low == 0:
-        return 0  # Default value instead of None  
+# ------------------------------------------------------------------------------
+# Function: Fetch Historical Price Data from Polygon.io
+# ------------------------------------------------------------------------------
+def get_historical_data(symbol, start, end):
+    """
+    Retrieves historical daily price data from Polygon.io for a given symbol.
+    Expects the API to return JSON with a "results" list.
+    """
+    try:
+        url = (
+            f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/"
+            f"{start}/{end}?apikey={POLYGON_API_KEY}"
+        )
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if "results" not in data or len(data["results"]) == 0:
+            logger.info(f"No historical data for {symbol}.")
+            return pd.DataFrame()
+        df = pd.DataFrame(data["results"])
+        # Convert the epoch time (milliseconds) to datetime
+        df['date'] = pd.to_datetime(df['t'], unit='ms')
+        return df
+    except Exception as e:
+        logger.error(f"Error fetching historical data for {symbol}: {e}")
+        return pd.DataFrame()
 
-    if abs(last_close - low) <= 0.02 * last_close:
-        return round(low, 2)  
-    elif abs(last_close - high) <= 0.02 * last_close:
-        return round(high, 2)  
-    else:
-        return round((high + low) / 2, 2)  
+# ------------------------------------------------------------------------------
+# Function: Calculate Technical Indicators using pandas_ta
+# ------------------------------------------------------------------------------
+def calculate_technical_indicators(df):
+    """
+    Calculates ATR and SMA50 as technical indicators.
+    Assumes df has columns: 'h' (high), 'l' (low), 'c' (close).
+    """
+    try:
+        df['ATR'] = ta.atr(high=df['h'], low=df['l'], close=df['c'], length=14)
+        df['SMA50'] = ta.sma(close=df['c'], length=50)
+        return df
+    except Exception as e:
+        logger.error(f"Error calculating technical indicators: {e}")
+        return df
 
-# 🔹 Process Stocks & Add Trade Levels
-def process_stocks(tickers):
-    """Processes stocks, filters weak setups, and checks for upcoming earnings reports."""
-    results = []
-    total_stocks = len(tickers)
-    start_time = time.time()
+# ------------------------------------------------------------------------------
+# Function: Compute Entry, Stop Loss, Profit Target, and Position Size
+# ------------------------------------------------------------------------------
+def compute_entry_stop_profit(symbol):
+    """
+    Using recent historical data and technical indicators, calculates:
+      - Entry price (near support/breakout)
+      - Stop loss (using ATR as a proxy for volatility)
+      - Profit target (3:1 risk/reward ratio)
+      - Position size (based on risking 2% of the account)
+    """
+    # Use a rolling 60-day window of data
+    end_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.datetime.now() - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+    df = get_historical_data(symbol, start_date, end_date)
+    if df.empty:
+        return None, None, None, None
+    
+    df = calculate_technical_indicators(df)
+    latest = df.iloc[-1]
+    current_price = latest['c']
+    # Use ATR as a measure of volatility; if not available, default to 2% of price.
+    atr = latest['ATR'] if not pd.isna(latest['ATR']) else current_price * 0.02
+    # Use SMA50 as a proxy for support. If current price is above SMA50, we assume bullish support.
+    sma50 = latest['SMA50'] if not pd.isna(latest['SMA50']) else current_price * 0.98
 
-    for i, ticker in enumerate(tickers):
-        sentiment_score = get_news_sentiment(ticker)
-        breakout_probability = ai_predict_breakout(ticker)
-        last_close, high, low = get_stock_data(ticker)  # ✅ Corrected Stock Price Fetching
+    # Determine entry: if current price is above support, use current price; otherwise, use support with a small buffer.
+    entry_price = current_price if current_price > sma50 else sma50 * 1.005
 
-        entry_price = calculate_entry_price(last_close, high, low)  
-        earnings_warning = check_earnings_date(ticker)
+    # Stop loss: 1 ATR below the entry price.
+    stop_loss = entry_price - atr
 
-        ai_score = round((sentiment_score * 20) + (breakout_probability * 0.8), 2)
+    # Calculate risk per share (entry - stop loss)
+    risk_amount = entry_price - stop_loss
+    # Profit target: 3 times the risk
+    profit_target = entry_price + (risk_amount * 3)
 
-        trade_approved = "✅ Yes" if ai_score >= 75 and breakout_probability >= 80 else "❌ No"
+    # Position size: (2% of account) / (risk per share)
+    position_size = risk_per_trade / risk_amount if risk_amount > 0 else 0
 
-        results.append([
-            ticker, sentiment_score, breakout_probability, 
-            ai_score, trade_approved, earnings_warning, last_close, entry_price, low, high
-        ])
+    return entry_price, stop_loss, profit_target, position_size
 
-        progress = (i + 1) / total_stocks
-        progress_bar.progress(progress)
-        
-        elapsed_time = time.time() - start_time
-        estimated_total_time = elapsed_time / progress if progress > 0 else 0
-        time_remaining = estimated_total_time - elapsed_time
-        time_remaining_text.text(f"⏳ Estimated Time Left: {time_remaining:.2f} seconds")
+# ------------------------------------------------------------------------------
+# Function: Analyze Stock and Return Trade Setup if Conditions are Met
+# ------------------------------------------------------------------------------
+def analyze_stock(symbol):
+    """
+    Combines sentiment analysis and breakout prediction with technical analysis.
+    Returns a dictionary with trade setup details if the stock meets criteria.
+    """
+    sentiment_score = get_news_sentiment(symbol)
+    breakout_signal = ai_predict_breakout(symbol)
+    
+    # Define criteria for an optimal setup.
+    if sentiment_score > 0.3 and breakout_signal > 70:
+        entry, stop, target, size = compute_entry_stop_profit(symbol)
+        if entry and stop and target and size:
+            return {
+                "Symbol": symbol,
+                "Entry": round(entry, 2),
+                "Stop": round(stop, 2),
+                "Target": round(target, 2),
+                "Position Size": round(size, 2),
+                "Sentiment": sentiment_score,
+                "Breakout Signal": breakout_signal
+            }
+    return None
 
-    return results
+# ------------------------------------------------------------------------------
+# Streamlit UI: Main Execution
+# ------------------------------------------------------------------------------
+st.title("📊 AI Stock Scanner with Entry, Stop, and Target")
 
-# 🔹 File Upload & Scanner Execution
 uploaded_file = st.file_uploader("Upload TradingView CSV File", type=["csv"])
 if uploaded_file:
-    stock_list = pd.read_csv(uploaded_file)
-    tickers = stock_list["Ticker"].tolist()
-
-    if st.button("Run AI Scanner"):
-        st.write("🔍 **Scanning Stocks... Please Wait...**")
-        final_results = process_stocks(tickers)
-
-        st.success("✅ AI Analysis Completed!")
-        st.dataframe(pd.DataFrame(final_results, columns=[
-            "Stock", "Sentiment Score", "Breakout Probability",  
-            "AI Score", "Trade Approved", "Earnings Alert", "Last Close Price", "Entry Price", "Support Level (Low)", "Resistance Level (High)"
-        ]))
+    try:
+        stock_list = pd.read_csv(uploaded_file)
+        if "Ticker" not in stock_list.columns:
+            st.error("CSV file must contain a 'Ticker' column.")
+        else:
+            tickers = stock_list["Ticker"].dropna().tolist()
+            results = []
+            for ticker in tickers:
+                st.write(f"Analyzing {ticker}...")
+                analysis = analyze_stock(ticker)
+                if analysis:
+                    results.append(analysis)
+                time.sleep(1)  # Small delay to avoid overwhelming APIs; adjust as needed.
+            if results:
+                st.success("Trade setups found!")
+                st.dataframe(pd.DataFrame(results))
+            else:
+                st.write("No optimal setups found based on current criteria.")
+    except Exception as e:
+        st.error(f"Error processing CSV: {e}")
 
