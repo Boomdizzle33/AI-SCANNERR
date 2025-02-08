@@ -55,9 +55,8 @@ def fetch_stock_news(ticker, start_date, end_date):
 
 def analyze_sentiment(article_content):
     """
-    Use OpenAI API to analyze the sentiment of a news article excerpt.
-    The prompt instructs the model to analyze tone, language, and context,
-    and then respond with one word only: bullish, bearish, or neutral.
+    Use OpenAI's ChatCompletion API to analyze the sentiment of a news article excerpt.
+    The assistant is instructed to provide a one-word answer: bullish, bearish, or neutral.
     """
     prompt = (
         "Analyze the following news article excerpt and determine its overall sentiment. "
@@ -67,21 +66,23 @@ def analyze_sentiment(article_content):
         "Answer:"
     )
     try:
-        response = openai.Completion.create(
-            engine="text-davinci-003",
-            prompt=prompt,
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a sentiment analysis assistant. Provide a one-word response: bullish, bearish, or neutral."},
+                {"role": "user", "content": prompt}
+            ],
             max_tokens=5,
             temperature=0.3,
         )
-        return response.choices[0].text.strip().lower()
+        return response.choices[0].message.content.strip().lower()
     except Exception as e:
         st.error(f"OpenAI API error: {e}")
         return "neutral"
 
 def scan_for_bullish_stocks(stock_list):
     """
-    For each stock in the list, check if it has at least 5 bullish news articles over a broader period.
-    In this example, the period is the past 2 days.
+    For each stock in the list, check if it has at least 5 bullish news articles over the past 2 days.
     Returns a dictionary with tickers and a count of bullish articles.
     """
     # Use timezone-aware UTC datetime objects
@@ -363,6 +364,7 @@ def main():
             
 if __name__ == "__main__":
     main()
+
 
 
 
