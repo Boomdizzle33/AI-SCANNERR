@@ -108,7 +108,7 @@ def compute_sentiment_score(ticker, start_date, end_date):
 def compute_news_sentiment_scores(stock_list):
     """
     Compute the news sentiment score for each ticker in stock_list concurrently.
-    Displays a progress bar with an estimated time remaining.
+    Displays a progress bar with estimated time remaining.
     Returns a dictionary mapping each ticker to its sentiment score.
     """
     end_date = datetime.datetime.now(datetime.timezone.utc)
@@ -173,6 +173,7 @@ def compute_contraction_phases(df, window=20, smooth_window=3, threshold=0.05):
     """
     Compute the number of contraction phases in the last 'window' days.
     A contraction phase is defined when the smoothed trading range (high - low) drops by at least 'threshold'.
+    (This feature is computed and shown but not required for VCP setup confirmation.)
     """
     if len(df) < window or ("h" not in df.columns or "l" not in df.columns):
         return 0
@@ -189,7 +190,7 @@ def compute_contraction_phases(df, window=20, smooth_window=3, threshold=0.05):
 
 def perform_technical_analysis(ticker):
     """
-    Compute technical indicators and VCP features (volume contraction and contraction phases)
+    Compute technical indicators and VCP features (including volume contraction and contraction phases)
     using historical data for a given ticker.
     Returns a dictionary of the latest computed values.
     """
@@ -234,7 +235,7 @@ def load_pretrained_lstm_model():
     """
     Load the pre-trained LSTM model from disk.
     The model should be saved as 'lstm_vcp_model.keras' in your repository.
-    (The message "Pre-trained LSTM model loaded." has been removed.)
+    (The "Pre-trained LSTM model loaded." message has been removed.)
     """
     try:
         model = load_model("lstm_vcp_model.keras")
@@ -250,7 +251,7 @@ def compute_lstm_breakout_probability(ticker, news_sentiment_score, sequence_len
     """
     Compute the breakout probability using the pre-trained LSTM model.
     Prepares a sequence of technical indicators, feeds it to the model, and adjusts the output using
-    the news sentiment score, market trend, and sector strength.
+    the news sentiment score, overall market trend, and sector strength.
     """
     df = fetch_historical_data(ticker)
     if df.empty:
@@ -326,21 +327,20 @@ def get_sector_strength(ticker):
 # ----------------------------
 def calculate_trade_levels(entry_price, stop_loss_price):
     """
-    Compute the profit target based on a 3:1 risk-to-reward ratio.
+    Compute the profit target using a 3:1 risk-to-reward ratio.
     """
     risk = abs(entry_price - stop_loss_price)
     return entry_price + RISK_REWARD_RATIO * risk
 
 def generate_breakout_report(news_sentiment_dict):
     """
-    For each ticker in the provided news_sentiment_dict, generate a report that includes:
-      - Trade parameters: Updated entry, stop-loss, and profit target.
-      - Breakout probability (displayed as an integer percent).
-      - News sentiment score.
-      - VCP Setup confirmation ("Yes" if breakout probability > 50%, volume trend is negative,
-        and contraction phases >= 3; otherwise "No").
-      - Contraction phases, capital flow strength, and volume trend.
-    Returns a DataFrame listing all stocks that qualify as a VCP setup.
+    For each ticker in news_sentiment_dict, generate a report that includes:
+      - Trade parameters (Updated Entry, Stop-Loss, Profit Target)
+      - Breakout probability (as an integer percent)
+      - News sentiment score
+      - VCP Setup confirmation ("Yes" if breakout probability > 50% and volume trend is negative)
+      - Contraction phases, Capital Flow Strength, and Volume Trend.
+    Returns a DataFrame listing all stocks that qualify as VCP setups.
     """
     report_rows = []
     for ticker, sentiment_info in news_sentiment_dict.items():
@@ -352,7 +352,8 @@ def generate_breakout_report(news_sentiment_dict):
         entry_price = tech_data["current_price"]
         stop_loss = tech_data["Support"] if tech_data["Support"] > 0 else entry_price * 0.98
         profit_target = calculate_trade_levels(entry_price, stop_loss)
-        vcp_setup = "Yes" if (ml_breakout_prob > 0.5 and tech_data["Volume_Trend"] < 0 and tech_data.get("Contraction_Phases", 0) >= 3) else "No"
+        # VCP Setup confirmation: now only requires breakout probability > 50% and negative volume trend.
+        vcp_setup = "Yes" if (ml_breakout_prob > 0.5 and tech_data["Volume_Trend"] < 0) else "No"
         if vcp_setup == "Yes":
             report_rows.append({
                 "Stock": ticker,
@@ -380,9 +381,8 @@ def main():
     st.title("Quantitative VCP Trading System with ML Refinement")
     st.markdown("""
     This system combines technical analysis with a pre-trained LSTM model and a news sentiment score to detect Quantitative VCP setups.
-    You can import a list of stock tickers (from TradingView) via a CSV file or manually enter them.
-    The system computes technical indicators (including volume contraction and contraction phases)
-    and outputs a breakout probability along with suggested trade parameters.
+    You can import a list of stock tickers via a CSV file or manually enter them.
+    The system computes technical indicators (including volume contraction) and outputs a breakout probability along with suggested trade parameters.
     Only stocks that qualify as VCP setups are shown.
     """)
     
@@ -416,18 +416,19 @@ def main():
             st.table(report_df)
             
             st.markdown("#### 📢 Summary")
-            st.markdown("The table above lists all stocks that meet the VCP criteria with suggested trade parameters:")
+            st.markdown("The table above lists all stocks that qualify as VCP setups with suggested trade parameters:")
             st.markdown("- **Updated Entry:** Suggested entry price based on current price.")
             st.markdown("- **Stop-Loss:** Recommended stop-loss level (below support).")
             st.markdown("- **Profit Target:** Target price calculated with a 3:1 risk-to-reward ratio.")
             st.markdown("- **Breakout Probability:** The model's breakout probability (as an integer percent).")
             st.markdown("- **News Sentiment Score:** Average sentiment score from recent news (bullish = +1, bearish = -1).")
             st.markdown("- **VCP Setup:** Confirms if the stock qualifies as a VCP setup (Yes/No).")
-            st.markdown("- **Contraction Phases:** Number of times the trading range has contracted significantly in the recent period.")
+            st.markdown("- **Contraction Phases:** Number of contraction phases detected (for informational purposes).")
             st.markdown("- **Capital Flow Strength & Volume Trend:** Additional indicators to support the setup.")
             
 if __name__ == "__main__":
     main()
+
 
 
 
