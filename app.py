@@ -4,15 +4,15 @@ import pandas as pd
 import numpy as np
 import datetime
 import openai
-import ta  # Technical analysis library; install via pip install ta
+import ta  # Install via: pip install ta
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from duckduckgo_search import DDGS  # Import for DuckDuckGo news retrieval
+from duckduckgo_search import DDGS  # For news retrieval (if used)
 
 # ----------------------------
 # CONFIGURATION & API KEYS
 # ----------------------------
-# Store these keys securely. In Streamlit Cloud, set these in your Secrets.
+# These keys should be set as secrets in your deployment or via environment variables.
 POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]        # Your OpenAI API key
 openai.api_key = OPENAI_API_KEY
@@ -33,20 +33,18 @@ sector_map = {
 }
 
 # ----------------------------
-# STEP 1: Rule-Based Filtering via News Sentiment using DuckDuckGo
+# STEP 1: Rule-Based Filtering via News Sentiment (DuckDuckGo)
 # ----------------------------
 def fetch_stock_news(ticker, start_date, end_date):
     """
     Fetch news for a given stock ticker between start_date and end_date using DuckDuckGo News.
-    The dates should be timezone-aware datetime objects.
+    Dates must be timezone-aware datetime objects.
     """
     query = f"{ticker} news"
     with DDGS() as ddgs:
-        # Removed unsupported keyword arguments.
         results = ddgs.news(query, max_results=20)
     filtered_results = []
     for article in results:
-        # Expecting the article dictionary to have a "date" field in "YYYY-MM-DD" format.
         if "date" in article:
             try:
                 article_date = datetime.datetime.strptime(article["date"], "%Y-%m-%d")
@@ -54,7 +52,6 @@ def fetch_stock_news(ticker, start_date, end_date):
                 if start_date <= article_date < end_date:
                     filtered_results.append(article)
             except Exception as e:
-                # If date parsing fails, include the article anyway.
                 filtered_results.append(article)
         else:
             filtered_results.append(article)
@@ -62,16 +59,16 @@ def fetch_stock_news(ticker, start_date, end_date):
 
 def analyze_sentiment(article_content):
     """
-    Use OpenAI's ChatCompletion.create to analyze the sentiment of a news article excerpt.
-    The assistant is instructed to provide a one-word answer: bullish, bearish, or neutral.
+    Use OpenAI's ChatCompletion to analyze the sentiment of a news article excerpt.
+    The assistant returns one word: bullish, bearish, or neutral.
     
-    NOTE: If you receive an error about openai.ChatCompletion not being supported, either run 
-    'openai migrate' or pin your installation to openai==0.28.
+    If you experience version issues with the OpenAI package, either run `openai migrate`
+    or pin your version to openai==0.28.0.
     """
     prompt = (
         "Analyze the following news article excerpt and determine its overall sentiment. "
         "Consider the tone, language, and context of the article. "
-        "Based on your analysis, respond with one word only: bullish, bearish, or neutral.\n\n"
+        "Respond with one word only: bullish, bearish, or neutral.\n\n"
         f"News article excerpt:\n{article_content}\n\n"
         "Answer:"
     )
@@ -79,7 +76,7 @@ def analyze_sentiment(article_content):
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a sentiment analysis assistant. Provide a one-word response: bullish, bearish, or neutral."},
+                {"role": "system", "content": "You are a sentiment analysis assistant. Respond with one word: bullish, bearish, or neutral."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=5,
@@ -92,11 +89,11 @@ def analyze_sentiment(article_content):
 
 def scan_for_bullish_stocks(stock_list):
     """
-    For each stock in the list, check if it has at least 5 bullish news articles over the past 2 days.
-    Returns a dictionary with tickers and a count of bullish articles.
+    For each stock in the list, check if it has at least 5 bullish news articles in the past 2 days.
+    Returns a dictionary with ticker symbols and the count of bullish articles.
     """
     end_date = datetime.datetime.now(datetime.timezone.utc)
-    start_date = end_date - datetime.timedelta(days=2)  # Broader window: last 2 days
+    start_date = end_date - datetime.timedelta(days=2)
     bullish_candidates = {}
     for ticker in stock_list:
         articles = fetch_stock_news(ticker, start_date, end_date)
@@ -111,11 +108,11 @@ def scan_for_bullish_stocks(stock_list):
     return bullish_candidates
 
 # ----------------------------
-# STEP 2: Feature Engineering for VCP (Technical Analysis & Volume Contraction)
+# STEP 2: Technical Analysis & Volume Contraction (VCP Features)
 # ----------------------------
-def fetch_historical_data(ticker, days=180):
+def fetch_historical_data(ticker, days=365):
     """
-    Fetch historical daily price data for the given ticker using Polygon.io.
+    Fetch historical daily price and volume data for the given ticker using Polygon.io.
     """
     end_date = datetime.datetime.today()
     start_date = end_date - datetime.timedelta(days=days)
@@ -138,8 +135,8 @@ def fetch_historical_data(ticker, days=180):
 
 def compute_volume_trend(df, window=20):
     """
-    Compute the percentage change of volume relative to a longer-term average.
-    A negative value indicates volume contraction (a key VCP signal).
+    Compute the volume trend as the percentage difference between current volume and a longer-term average.
+    A negative value suggests volume contraction.
     """
     df["Volume_LongAvg"] = df["v"].rolling(window=window*2).mean()
     df["Volume_Trend"] = ((df["v"] - df["Volume_LongAvg"]) / df["Volume_LongAvg"]) * 100
@@ -147,8 +144,8 @@ def compute_volume_trend(df, window=20):
 
 def perform_technical_analysis(ticker):
     """
-    Compute technical indicators and volume contraction using historical data.
-    Returns a snapshot (latest row) of key technical values.
+    Compute technical indicators and volume contraction features using historical data.
+    Returns a dictionary with the latest computed values.
     """
     df = fetch_historical_data(ticker)
     if df.empty:
@@ -167,7 +164,7 @@ def perform_technical_analysis(ticker):
     df = compute_volume_trend(df)
     
     latest = df.iloc[-1]
-    tech_data = {
+    return {
         "current_price": latest["c"],
         "SMA20": latest["SMA20"],
         "SMA50": latest["SMA50"],
@@ -180,22 +177,22 @@ def perform_technical_analysis(ticker):
         "volume_spike": bool(latest["Volume_Spike"]),
         "Volume_Trend": latest["Volume_Trend"]
     }
-    return tech_data
 
 # ----------------------------
-# STEP 3: Refinement with Machine Learning (Pre-Trained LSTM Model)
+# STEP 3: Load Pre-Trained LSTM Model and Compute Breakout Probability
 # ----------------------------
 def load_pretrained_lstm_model():
     """
     Load a pre-trained LSTM model from disk.
-    The model should be trained offline on historical data to learn VCP patterns.
+    The model should be saved as 'lstm_vcp_model.keras' in your repository.
     """
     try:
-        model = load_model("lstm_vcp_model.h5")
+        model = load_model("lstm_vcp_model.keras")
         st.write("Pre-trained LSTM model loaded.")
         return model
     except Exception as e:
-        st.warning("Pre-trained LSTM model not found. Using a dummy model for demonstration.")
+        st.error("Pre-trained LSTM model not found. Please ensure 'lstm_vcp_model.keras' is in the repository.")
+        # Dummy fallback model (always returns 0.5 probability)
         class DummyModel:
             def predict(self, X):
                 return np.array([[0.5]])
@@ -203,8 +200,8 @@ def load_pretrained_lstm_model():
 
 def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20, breakout_threshold=0.01):
     """
-    Compute the breakout probability for the stock using the pre-trained LSTM model.
-    The ML model refines the candidate by capturing nuanced patterns from historical data.
+    Compute the breakout probability using the pre-trained LSTM model.
+    Uses the latest sequence of technical indicators as input.
     """
     df = fetch_historical_data(ticker)
     if df.empty:
@@ -225,9 +222,11 @@ def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20,
     if df.empty or len(df) < sequence_length:
         return 0
 
-    feature_cols = ['SMA20', 'SMA50', 'RSI', 'MACD',
-                    'Bollinger_High', 'Bollinger_Low',
-                    'Support', 'Resistance', 'Volume_Spike', 'Volume_Trend']
+    feature_cols = [
+        'SMA20', 'SMA50', 'RSI', 'MACD',
+        'Bollinger_High', 'Bollinger_Low',
+        'Support', 'Resistance', 'Volume_Spike', 'Volume_Trend'
+    ]
     df = df.dropna(subset=feature_cols)
     if len(df) < sequence_length:
         return 0
@@ -249,11 +248,11 @@ def compute_lstm_breakout_probability(ticker, bullish_count, sequence_length=20,
 def get_market_trend():
     """
     Assess the overall market trend using SPY as a proxy.
-    Returns True if bullish (current price > 50-day SMA), otherwise False.
+    Returns True if the current price is above its 50-day SMA.
     """
     df = fetch_historical_data("SPY", days=100)
     if df.empty:
-        return True  # Default to bullish if data is missing.
+        return True
     df["SMA50"] = ta.trend.sma_indicator(df["c"], window=50)
     latest = df.iloc[-1]
     return latest["c"] > latest["SMA50"]
@@ -261,7 +260,7 @@ def get_market_trend():
 def get_sector_strength(ticker):
     """
     Evaluate the strength of the stock's sector using its representative ETF.
-    Returns a multiplier: 1.1 for a strong sector (price > 50-day SMA) and 0.9 for a weak one.
+    Returns a multiplier: 1.1 if the sector is strong (price > 50-day SMA), 0.9 otherwise.
     """
     if ticker not in sector_map:
         return 1.0
@@ -278,14 +277,14 @@ def get_sector_strength(ticker):
 # ----------------------------
 def calculate_trade_levels(entry_price, stop_loss_price):
     """
-    Compute the profit target based on a 3:1 profit-to-risk ratio.
+    Compute the profit target using a 3:1 profit-to-risk ratio.
     """
     risk = abs(entry_price - stop_loss_price)
     return entry_price + RISK_REWARD_RATIO * risk
 
 def generate_breakout_report(bullish_candidates):
     """
-    For each candidate stock, apply technical analysis and ML refinement
+    For each candidate stock, use technical analysis and ML refinement
     to generate a report with trade parameters.
     """
     report_rows = []
@@ -320,7 +319,7 @@ def main():
     st.title("Quantitative VCP Trading System with ML Refinement")
     st.markdown("""
     This system combines rule-based filtering with machine learning refinement to detect Quantitative VCP setups.
-    You can import a list of filtered stock tickers from TradingView via a CSV file or manually enter them.
+    You can import a list of filtered stock tickers (from TradingView) via a CSV file or manually enter them.
     The system computes technical indicators (including volume contraction) and uses a pre-trained LSTM model to output a breakout probability.
     It also suggests trade parameters based on a 3:1 risk-to-reward ratio.
     """)
