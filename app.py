@@ -12,7 +12,7 @@ import concurrent.futures
 # ----------------------------
 # CONFIGURATION & API KEYS
 # ----------------------------
-# Set these keys in your Streamlit Cloud Secrets or as environment variables.
+# Set these keys in your Streamlit Cloud Secrets or via environment variables.
 POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
 
 # Risk management parameters
@@ -32,6 +32,7 @@ sector_map = {
 
 # ----------------------------
 # STEP 1: Technical Analysis & VCP Feature Engineering
+# (News sentiment and contraction counter have been removed.)
 # ----------------------------
 @st.cache_data(ttl=3600)
 def fetch_historical_data(ticker, days=365):
@@ -63,28 +64,9 @@ def compute_volume_trend(df, window=20):
     df["Volume_Trend"] = ((df["v"] - df["Volume_LongAvg"]) / df["Volume_LongAvg"]) * 100
     return df
 
-def compute_contraction_phases(df, window=20, smooth_window=3, threshold=0.05):
-    """
-    Compute the number of contraction phases in the last 'window' days.
-    A contraction phase is defined when the smoothed trading range (high - low) drops by at least 'threshold'.
-    (This feature is computed and displayed for informational purposes.)
-    """
-    if len(df) < window or ("h" not in df.columns or "l" not in df.columns):
-        return 0
-    recent_df = df.tail(window).copy()
-    recent_df["range"] = recent_df["h"] - recent_df["l"]
-    recent_df["smoothed_range"] = recent_df["range"].rolling(window=smooth_window, min_periods=1).mean()
-    baseline = recent_df["smoothed_range"].iloc[0]
-    phase_count = 0
-    for val in recent_df["smoothed_range"].iloc[1:]:
-        if baseline > 0 and ((baseline - val) / baseline) >= threshold:
-            phase_count += 1
-            baseline = val
-    return phase_count
-
 def perform_technical_analysis(ticker):
     """
-    Compute technical indicators and VCP features (including volume contraction).
+    Compute technical indicators and volume contraction features using historical data for a given ticker.
     Returns a dictionary of the latest computed values.
     """
     df = fetch_historical_data(ticker)
@@ -103,8 +85,6 @@ def perform_technical_analysis(ticker):
     df["Volume_Spike"] = (df["v"] > (df["Volume_Avg"] * 1.5)).astype(int)
     df = compute_volume_trend(df)
     
-    contraction_phases = compute_contraction_phases(df, window=20, smooth_window=3, threshold=0.05)
-    
     latest = df.iloc[-1]
     return {
         "current_price": latest["c"],
@@ -117,8 +97,7 @@ def perform_technical_analysis(ticker):
         "Support": latest["Support"],
         "Resistance": latest["Resistance"],
         "volume_spike": bool(latest["Volume_Spike"]),
-        "Volume_Trend": latest["Volume_Trend"],
-        "Contraction_Phases": contraction_phases
+        "Volume_Trend": latest["Volume_Trend"]
     }
 
 # ----------------------------
@@ -218,7 +197,7 @@ def generate_breakout_report(stock_list):
       - Trade parameters: Updated Entry, Stop-Loss, and Profit Target.
       - Breakout probability (displayed as an integer percent).
       - VCP Setup confirmation ("Yes" if breakout probability > 40% and volume trend is negative; otherwise "No").
-      - Contraction phases (informational), Capital Flow Strength, and Volume Trend.
+      - Capital Flow Strength and Volume Trend.
     Returns a DataFrame listing the results for all scanned stocks (limited to the first 100).
     """
     report_rows = []
@@ -238,7 +217,6 @@ def generate_breakout_report(stock_list):
             "Profit Target": round(profit_target, 2),
             "Breakout Probability": f"{int(round(ml_breakout_prob * 100))}%",
             "VCP Setup": vcp_setup,
-            "Contraction Phases": tech_data.get("Contraction_Phases", 0),
             "Capital Flow Strength": "✅" if tech_data["volume_spike"] else "❌",
             "Volume Trend": f"{round(tech_data['Volume_Trend'], 1)}%"
         })
@@ -247,7 +225,6 @@ def generate_breakout_report(stock_list):
         df_report["Breakout_Prob_Value"] = df_report["Breakout Probability"].str.rstrip("%").astype(float)
         df_report = df_report.sort_values(by="Breakout_Prob_Value", ascending=False)
         df_report.drop("Breakout_Prob_Value", axis=1, inplace=True)
-    # Limit results to first 100 stocks if more are available.
     if len(df_report) > 100:
         df_report = df_report.head(100)
     return df_report
@@ -281,6 +258,7 @@ def main():
     if st.button("Scan for Breakout Candidates"):
         with st.spinner("Running technical analysis and ML breakout prediction..."):
             report_df = generate_breakout_report(stock_list)
+        
         if report_df.empty:
             st.warning("No stocks qualified as VCP setups based on the criteria.")
         else:
@@ -288,15 +266,15 @@ def main():
             st.table(report_df)
             
             st.markdown("#### 📢 Summary")
-            st.markdown("The table above lists all stocks (up to the first 100) with their computed trade parameters:")
+            st.markdown("The table above lists all stocks with their computed trade parameters:")
             st.markdown("- **Updated Entry:** Suggested entry price based on current price.")
             st.markdown("- **Stop-Loss:** Recommended stop-loss level (below support).")
             st.markdown("- **Profit Target:** Target price calculated with a 3:1 risk-to-reward ratio.")
             st.markdown("- **Breakout Probability:** The model's breakout probability (as an integer percent).")
             st.markdown("- **VCP Setup:** Indicates if the stock qualifies as a VCP setup (Yes/No) based on criteria.")
-            st.markdown("- **Contraction Phases:** Number of contraction phases detected (informational only).")
-            st.markdown("- **Capital Flow Strength & Volume Trend:** Additional technical indicators.")
+            st.markdown("- **Capital Flow Strength & Volume Trend:** Additional indicators to support the setup.")
             
 if __name__ == "__main__":
     main()
+
 
