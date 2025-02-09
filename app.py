@@ -47,7 +47,7 @@ def fetch_historical_data(ticker, days=365):
     if response.status_code == 200:
         df = pd.DataFrame(response.json().get("results", []))
         if not df.empty:
-            df["t"] = pd.to_datetime(df["t"], unit='ms')
+            df["t"] = pd.to_datetime(df["t"], unit="ms")
             df.set_index("t", inplace=True)
         return df
     else:
@@ -187,10 +187,6 @@ def compute_lstm_breakout_probability(ticker, sequence_length=20, breakout_thres
     return min(final_prob, 1.0)
 
 def get_market_trend():
-    """
-    Assess the overall market trend using SPY as a proxy.
-    Returns True if SPY's current price is above its 50-day SMA, otherwise False.
-    """
     df = fetch_historical_data("SPY", days=100)
     if df.empty:
         return True
@@ -199,10 +195,6 @@ def get_market_trend():
     return latest["c"] > latest["SMA50"]
 
 def get_sector_strength(ticker):
-    """
-    Evaluate the strength of the stock's sector using its representative ETF.
-    Returns 1.1 if the ETF's current price is above its 50-day SMA, else 0.9.
-    """
     if ticker not in sector_map:
         return 1.0
     sector_etf = sector_map[ticker]
@@ -217,20 +209,17 @@ def get_sector_strength(ticker):
 # STEP 3: Trade Setup & Report Generation
 # ----------------------------
 def calculate_trade_levels(entry_price, stop_loss_price):
-    """
-    Compute the profit target based on a 3:1 risk-to-reward ratio.
-    """
     risk = abs(entry_price - stop_loss_price)
     return entry_price + RISK_REWARD_RATIO * risk
 
-def generate_breakout_report():
+def generate_breakout_report(stock_list):
     """
-    For each ticker provided, generate a report that includes:
+    For each ticker in stock_list, generate a report that includes:
       - Trade parameters: Updated Entry, Stop-Loss, and Profit Target.
       - Breakout probability (displayed as an integer percent).
       - VCP Setup confirmation ("Yes" if breakout probability > 40% and volume trend is negative; otherwise "No").
       - Contraction phases (informational), Capital Flow Strength, and Volume Trend.
-    Returns a DataFrame listing all stocks that qualify as VCP setups.
+    Returns a DataFrame listing the results for all scanned stocks (limited to the first 100).
     """
     report_rows = []
     for ticker in stock_list:
@@ -241,24 +230,26 @@ def generate_breakout_report():
         entry_price = tech_data["current_price"]
         stop_loss = tech_data["Support"] if tech_data["Support"] > 0 else entry_price * 0.98
         profit_target = calculate_trade_levels(entry_price, stop_loss)
-        # A stock qualifies as a VCP setup if breakout probability > 40% and volume trend is negative.
         vcp_setup = "Yes" if (ml_breakout_prob > 0.4 and tech_data["Volume_Trend"] < 0) else "No"
-        if vcp_setup == "Yes":
-            report_rows.append({
-                "Stock": ticker,
-                "Updated Entry": round(entry_price, 2),
-                "Stop-Loss": round(stop_loss, 2),
-                "Profit Target": round(profit_target, 2),
-                "Breakout Probability": f"{int(round(ml_breakout_prob * 100))}%",
-                "Contraction Phases": tech_data.get("Contraction_Phases", 0),
-                "Capital Flow Strength": "✅" if tech_data["volume_spike"] else "❌",
-                "Volume Trend": f"{round(tech_data['Volume_Trend'], 1)}%"
-            })
+        report_rows.append({
+            "Stock": ticker,
+            "Updated Entry": round(entry_price, 2),
+            "Stop-Loss": round(stop_loss, 2),
+            "Profit Target": round(profit_target, 2),
+            "Breakout Probability": f"{int(round(ml_breakout_prob * 100))}%",
+            "VCP Setup": vcp_setup,
+            "Contraction Phases": tech_data.get("Contraction_Phases", 0),
+            "Capital Flow Strength": "✅" if tech_data["volume_spike"] else "❌",
+            "Volume Trend": f"{round(tech_data['Volume_Trend'], 1)}%"
+        })
     df_report = pd.DataFrame(report_rows)
     if not df_report.empty:
         df_report["Breakout_Prob_Value"] = df_report["Breakout Probability"].str.rstrip("%").astype(float)
         df_report = df_report.sort_values(by="Breakout_Prob_Value", ascending=False)
         df_report.drop("Breakout_Prob_Value", axis=1, inplace=True)
+    # Limit results to first 100 stocks if more are available.
+    if len(df_report) > 100:
+        df_report = df_report.head(100)
     return df_report
 
 # ----------------------------
@@ -268,14 +259,12 @@ def main():
     st.title("Quantitative VCP Trading System with ML Refinement")
     st.markdown("""
     This system uses technical analysis and a pre-trained LSTM model to detect Quantitative VCP setups.
-    You can import a list of stock tickers via a CSV file or manually enter them.
-    The system computes technical indicators (including volume contraction) and outputs a breakout probability 
-    along with suggested trade parameters.
-    Only stocks that qualify as VCP setups are shown.
+    You can import a list of stock tickers (from TradingView) via a CSV file or manually enter them.
+    The system computes technical indicators (including volume contraction) and outputs a breakout probability along with suggested trade parameters.
+    All results for the first 100 stocks scanned are displayed.
     """)
     
-    global stock_list  # Declare stock_list as global so that it can be used in generate_breakout_report()
-    
+    global stock_list
     uploaded_file = st.file_uploader("Upload CSV file with stock tickers", type=["csv"])
     if uploaded_file is not None:
         try:
@@ -291,22 +280,22 @@ def main():
     
     if st.button("Scan for Breakout Candidates"):
         with st.spinner("Running technical analysis and ML breakout prediction..."):
-            report_df = generate_breakout_report()
-        
+            report_df = generate_breakout_report(stock_list)
         if report_df.empty:
             st.warning("No stocks qualified as VCP setups based on the criteria.")
         else:
-            st.markdown("### 📌 Stocks in VCP Setup Pattern")
+            st.markdown("### 📌 Stocks Scanned (Up to First 100)")
             st.table(report_df)
             
             st.markdown("#### 📢 Summary")
-            st.markdown("The table above lists all stocks that qualify as VCP setups with suggested trade parameters:")
+            st.markdown("The table above lists all stocks (up to the first 100) with their computed trade parameters:")
             st.markdown("- **Updated Entry:** Suggested entry price based on current price.")
             st.markdown("- **Stop-Loss:** Recommended stop-loss level (below support).")
             st.markdown("- **Profit Target:** Target price calculated with a 3:1 risk-to-reward ratio.")
             st.markdown("- **Breakout Probability:** The model's breakout probability (as an integer percent).")
+            st.markdown("- **VCP Setup:** Indicates if the stock qualifies as a VCP setup (Yes/No) based on criteria.")
             st.markdown("- **Contraction Phases:** Number of contraction phases detected (informational only).")
-            st.markdown("- **Capital Flow Strength & Volume Trend:** Additional indicators to support the setup.")
+            st.markdown("- **Capital Flow Strength & Volume Trend:** Additional technical indicators.")
             
 if __name__ == "__main__":
     main()
