@@ -8,13 +8,13 @@ import openai
 import ta  # pip install ta
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from duckduckgo_search import DDGS, RatelimitException  # For news retrieval with rate limit exception
+from duckduckgo_search import DDGS  # For news retrieval
 import concurrent.futures
 
 # ----------------------------
 # CONFIGURATION & API KEYS
 # ----------------------------
-# Set these keys in your Streamlit Cloud Secrets or as environment variables.
+# Set these keys in your Streamlit Cloud Secrets or via environment variables.
 POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]        # Your OpenAI API key
 openai.api_key = OPENAI_API_KEY
@@ -35,12 +35,12 @@ sector_map = {
 }
 
 # ----------------------------
-# STEP 1: News Sentiment Functions with Rate Limit Fixes
+# STEP 1: News Sentiment Functions with Rate-Limit Fixes
 # ----------------------------
 def fetch_stock_news(ticker, start_date, end_date, max_retries=3, initial_delay=1):
     """
     Fetch news articles for a given ticker between start_date and end_date using DuckDuckGo.
-    If a rate limit error occurs, retry with exponential backoff.
+    Implements retry logic with exponential backoff for rate limit errors.
     Dates must be timezone-aware datetime objects.
     """
     query = f"{ticker} news"
@@ -63,11 +63,15 @@ def fetch_stock_news(ticker, start_date, end_date, max_retries=3, initial_delay=
                 else:
                     filtered_results.append(article)
             return filtered_results
-        except RatelimitException as e:
-            st.warning(f"Rate limit reached for {ticker}. Retrying in {delay} seconds...")
-            time.sleep(delay)
-            delay *= 2  # Exponential backoff
-            retries += 1
+        except Exception as e:
+            if "403" in str(e):
+                st.warning(f"Rate limit reached for {ticker}. Retrying in {delay} seconds...")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+                retries += 1
+            else:
+                st.error(f"Error fetching news for {ticker}: {e}")
+                return []
     st.error(f"Max retries exceeded for {ticker}.")
     return []
 
@@ -76,8 +80,7 @@ def analyze_sentiment(article_content):
     Use OpenAI's ChatCompletion API to analyze the sentiment of a news article excerpt.
     Returns one word: "bullish", "bearish", or "neutral".
     
-    NOTE: If you encounter issues with openai.ChatCompletion, either run `openai migrate`
-    or pin your installation to openai==0.28.0.
+    NOTE: If you encounter issues with openai.ChatCompletion, run `openai migrate` or pin your version to openai==0.28.0.
     """
     prompt = (
         "Analyze the following news article excerpt and determine its overall sentiment. "
@@ -245,7 +248,7 @@ def load_pretrained_lstm_model():
     """
     Load the pre-trained LSTM model from disk.
     The model should be saved as 'lstm_vcp_model.keras' in your repository.
-    (The message upon loading is suppressed.)
+    (No message is displayed on successful load.)
     """
     try:
         model = load_model("lstm_vcp_model.keras")
@@ -261,7 +264,7 @@ def compute_lstm_breakout_probability(ticker, news_sentiment_score, sequence_len
     """
     Compute the breakout probability using the pre-trained LSTM model.
     Prepares a sequence of technical indicators, feeds it to the model, and adjusts the output using
-    the news sentiment score, market trend, and sector strength.
+    the news sentiment score, overall market trend, and sector strength.
     """
     df = fetch_historical_data(ticker)
     if df.empty:
@@ -349,7 +352,7 @@ def generate_breakout_report(news_sentiment_dict):
       - Breakout probability (displayed as an integer percent).
       - News sentiment score.
       - VCP Setup confirmation ("Yes" if breakout probability > 50% and volume trend is negative).
-      - Contraction phases (displayed for informational purposes), Capital Flow Strength, and Volume Trend.
+      - Contraction phases (informational), Capital Flow Strength, and Volume Trend.
     Returns a DataFrame listing all stocks that qualify as VCP setups.
     """
     report_rows = []
@@ -395,7 +398,6 @@ def main():
     Only stocks that qualify as VCP setups are shown.
     """)
     
-    # Option 1: CSV file uploader (expects a column named "ticker")
     uploaded_file = st.file_uploader("Upload CSV file with stock tickers", type=["csv"])
     if uploaded_file is not None:
         try:
@@ -406,7 +408,6 @@ def main():
             st.error("Error reading CSV file. Ensure it has a column named 'ticker'.")
             stock_list = []
     else:
-        # Option 2: Manual entry
         stock_list_input = st.text_area("Or enter comma-separated stock tickers", "AAPL, MSFT, GOOGL, AMZN, TSLA")
         stock_list = [ticker.strip().upper() for ticker in stock_list_input.split(",") if ticker.strip() != ""]
     
