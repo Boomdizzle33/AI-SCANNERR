@@ -78,9 +78,10 @@ def fetch_stock_news(ticker, start_date, end_date, max_retries=3, initial_delay=
 def analyze_sentiment(article_content):
     """
     Use OpenAI's ChatCompletion API to analyze the sentiment of a news article excerpt.
-    Returns one word: "bullish", "bearish", or "neutral".
+    Returns a one-word sentiment: "bullish", "bearish", or "neutral".
     
-    NOTE: If you encounter issues with openai.ChatCompletion, run `openai migrate` or pin your version to openai==0.28.0.
+    NOTE: If you encounter issues with openai.ChatCompletion, either run `openai migrate`
+    or pin your installation to openai==0.28.0.
     """
     prompt = (
         "Analyze the following news article excerpt and determine its overall sentiment. "
@@ -351,7 +352,7 @@ def generate_breakout_report(news_sentiment_dict):
       - Trade parameters: Updated Entry, Stop-Loss, and Profit Target.
       - Breakout probability (displayed as an integer percent).
       - News sentiment score.
-      - VCP Setup confirmation ("Yes" if breakout probability > 50% and volume trend is negative).
+      - VCP Setup confirmation ("Yes" if breakout probability > 40% and volume trend is negative; otherwise "No").
       - Contraction phases (informational), Capital Flow Strength, and Volume Trend.
     Returns a DataFrame listing all stocks that qualify as VCP setups.
     """
@@ -365,7 +366,8 @@ def generate_breakout_report(news_sentiment_dict):
         entry_price = tech_data["current_price"]
         stop_loss = tech_data["Support"] if tech_data["Support"] > 0 else entry_price * 0.98
         profit_target = calculate_trade_levels(entry_price, stop_loss)
-        vcp_setup = "Yes" if (ml_breakout_prob > 0.5 and tech_data["Volume_Trend"] < 0) else "No"
+        # Adjusted threshold: stock qualifies if breakout probability > 40% and volume trend is negative.
+        vcp_setup = "Yes" if (ml_breakout_prob > 0.4 and tech_data["Volume_Trend"] < 0) else "No"
         if vcp_setup == "Yes":
             report_rows.append({
                 "Stock": ticker,
