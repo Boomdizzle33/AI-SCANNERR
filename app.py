@@ -3,18 +3,18 @@ import requests
 import pandas as pd
 import numpy as np
 import datetime
-import time  # For progress estimation
+import time  # For progress estimation and delays
 import openai
 import ta  # pip install ta
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from duckduckgo_search import DDGS  # For news retrieval
+from duckduckgo_search import DDGS, RatelimitException  # For news retrieval with rate limit exception
 import concurrent.futures
 
 # ----------------------------
 # CONFIGURATION & API KEYS
 # ----------------------------
-# Set these keys in your Streamlit Cloud Secrets or via environment variables.
+# Set these keys in your Streamlit Cloud Secrets or as environment variables.
 POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]        # Your OpenAI API key
 openai.api_key = OPENAI_API_KEY
@@ -35,34 +35,46 @@ sector_map = {
 }
 
 # ----------------------------
-# STEP 1: News Sentiment Functions
+# STEP 1: News Sentiment Functions with Rate Limit Fixes
 # ----------------------------
-def fetch_stock_news(ticker, start_date, end_date):
+def fetch_stock_news(ticker, start_date, end_date, max_retries=3, initial_delay=1):
     """
     Fetch news articles for a given ticker between start_date and end_date using DuckDuckGo.
+    If a rate limit error occurs, retry with exponential backoff.
     Dates must be timezone-aware datetime objects.
     """
     query = f"{ticker} news"
-    with DDGS() as ddgs:
-        results = ddgs.news(query, max_results=20)
-    filtered_results = []
-    for article in results:
-        if "date" in article:
-            try:
-                article_date = datetime.datetime.strptime(article["date"], "%Y-%m-%d")
-                article_date = article_date.replace(tzinfo=datetime.timezone.utc)
-                if start_date <= article_date < end_date:
+    delay = initial_delay
+    retries = 0
+    while retries < max_retries:
+        try:
+            with DDGS() as ddgs:
+                results = ddgs.news(query, max_results=20)
+            filtered_results = []
+            for article in results:
+                if "date" in article:
+                    try:
+                        article_date = datetime.datetime.strptime(article["date"], "%Y-%m-%d")
+                        article_date = article_date.replace(tzinfo=datetime.timezone.utc)
+                        if start_date <= article_date < end_date:
+                            filtered_results.append(article)
+                    except Exception:
+                        filtered_results.append(article)
+                else:
                     filtered_results.append(article)
-            except Exception:
-                filtered_results.append(article)
-        else:
-            filtered_results.append(article)
-    return filtered_results
+            return filtered_results
+        except RatelimitException as e:
+            st.warning(f"Rate limit reached for {ticker}. Retrying in {delay} seconds...")
+            time.sleep(delay)
+            delay *= 2  # Exponential backoff
+            retries += 1
+    st.error(f"Max retries exceeded for {ticker}.")
+    return []
 
 def analyze_sentiment(article_content):
     """
     Use OpenAI's ChatCompletion API to analyze the sentiment of a news article excerpt.
-    Returns a one-word sentiment: "bullish", "bearish", or "neutral".
+    Returns one word: "bullish", "bearish", or "neutral".
     
     NOTE: If you encounter issues with openai.ChatCompletion, either run `openai migrate`
     or pin your installation to openai==0.28.0.
@@ -121,10 +133,7 @@ def compute_news_sentiment_scores(stock_list):
     start_time = time.time()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_ticker = {
-            executor.submit(compute_sentiment_score, ticker, start_date, end_date): ticker
-            for ticker in stock_list
-        }
+        future_to_ticker = {executor.submit(compute_sentiment_score, ticker, start_date, end_date): ticker for ticker in stock_list}
         for future in concurrent.futures.as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             score = future.result()
@@ -174,7 +183,7 @@ def compute_contraction_phases(df, window=20, smooth_window=3, threshold=0.05):
     """
     Compute the number of contraction phases in the last 'window' days.
     A contraction phase is defined when the smoothed trading range (high - low) drops by at least 'threshold'.
-    (This feature is computed and displayed but not required for VCP confirmation.)
+    (This feature is computed and displayed for informational purposes.)
     """
     if len(df) < window or ("h" not in df.columns or "l" not in df.columns):
         return 0
@@ -236,7 +245,7 @@ def load_pretrained_lstm_model():
     """
     Load the pre-trained LSTM model from disk.
     The model should be saved as 'lstm_vcp_model.keras' in your repository.
-    (The "Pre-trained LSTM model loaded." message is suppressed.)
+    (The message upon loading is suppressed.)
     """
     try:
         model = load_model("lstm_vcp_model.keras")
@@ -252,7 +261,7 @@ def compute_lstm_breakout_probability(ticker, news_sentiment_score, sequence_len
     """
     Compute the breakout probability using the pre-trained LSTM model.
     Prepares a sequence of technical indicators, feeds it to the model, and adjusts the output using
-    the news sentiment score, overall market trend, and sector strength.
+    the news sentiment score, market trend, and sector strength.
     """
     df = fetch_historical_data(ticker)
     if df.empty:
@@ -297,6 +306,10 @@ def compute_lstm_breakout_probability(ticker, news_sentiment_score, sequence_len
     return min(final_prob, 1.0)
 
 def get_market_trend():
+    """
+    Assess the overall market trend using SPY as a proxy.
+    Returns True if SPY's current price is above its 50-day SMA, otherwise False.
+    """
     df = fetch_historical_data("SPY", days=100)
     if df.empty:
         return True
@@ -305,6 +318,10 @@ def get_market_trend():
     return latest["c"] > latest["SMA50"]
 
 def get_sector_strength(ticker):
+    """
+    Evaluate the strength of the stock's sector using its representative ETF.
+    Returns 1.1 if the ETF's current price is above its 50-day SMA, else 0.9.
+    """
     if ticker not in sector_map:
         return 1.0
     sector_etf = sector_map[ticker]
@@ -319,10 +336,22 @@ def get_sector_strength(ticker):
 # STEP 4: Trade Setup & Report Generation
 # ----------------------------
 def calculate_trade_levels(entry_price, stop_loss_price):
+    """
+    Compute the profit target based on a 3:1 risk-to-reward ratio.
+    """
     risk = abs(entry_price - stop_loss_price)
     return entry_price + RISK_REWARD_RATIO * risk
 
 def generate_breakout_report(news_sentiment_dict):
+    """
+    For each ticker in news_sentiment_dict, generate a report that includes:
+      - Trade parameters: Updated Entry, Stop-Loss, and Profit Target.
+      - Breakout probability (displayed as an integer percent).
+      - News sentiment score.
+      - VCP Setup confirmation ("Yes" if breakout probability > 50% and volume trend is negative).
+      - Contraction phases (displayed for informational purposes), Capital Flow Strength, and Volume Trend.
+    Returns a DataFrame listing all stocks that qualify as VCP setups.
+    """
     report_rows = []
     for ticker, sentiment_info in news_sentiment_dict.items():
         tech_data = perform_technical_analysis(ticker)
@@ -366,6 +395,7 @@ def main():
     Only stocks that qualify as VCP setups are shown.
     """)
     
+    # Option 1: CSV file uploader (expects a column named "ticker")
     uploaded_file = st.file_uploader("Upload CSV file with stock tickers", type=["csv"])
     if uploaded_file is not None:
         try:
@@ -376,6 +406,7 @@ def main():
             st.error("Error reading CSV file. Ensure it has a column named 'ticker'.")
             stock_list = []
     else:
+        # Option 2: Manual entry
         stock_list_input = st.text_area("Or enter comma-separated stock tickers", "AAPL, MSFT, GOOGL, AMZN, TSLA")
         stock_list = [ticker.strip().upper() for ticker in stock_list_input.split(",") if ticker.strip() != ""]
     
@@ -401,11 +432,10 @@ def main():
             st.markdown("- **Breakout Probability:** The model's breakout probability (as an integer percent).")
             st.markdown("- **News Sentiment Score:** Average sentiment score from recent news (bullish = +1, bearish = -1).")
             st.markdown("- **VCP Setup:** Confirms if the stock qualifies as a VCP setup (Yes/No).")
-            st.markdown("- **Contraction Phases:** Number of contraction phases detected (for informational purposes).")
+            st.markdown("- **Contraction Phases:** Number of contraction phases detected (informational only).")
             st.markdown("- **Capital Flow Strength & Volume Trend:** Additional indicators to support the setup.")
             
 if __name__ == "__main__":
     main()
-
 
 
