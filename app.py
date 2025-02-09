@@ -12,7 +12,7 @@ import concurrent.futures
 # ----------------------------
 # CONFIGURATION & API KEYS
 # ----------------------------
-# Set these keys in your Streamlit Cloud Secrets or via environment variables.
+# Set these keys in your Streamlit Cloud Secrets or as environment variables.
 POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]  # Your Polygon.io API key
 
 # Risk management parameters
@@ -32,7 +32,7 @@ sector_map = {
 
 # ----------------------------
 # STEP 1: Technical Analysis & VCP Feature Engineering
-# (News sentiment and contraction counter have been removed.)
+# (News sentiment and contraction counter removed)
 # ----------------------------
 @st.cache_data(ttl=3600)
 def fetch_historical_data(ticker, days=365):
@@ -58,7 +58,7 @@ def fetch_historical_data(ticker, days=365):
 def compute_volume_trend(df, window=20):
     """
     Compute the percentage change of volume relative to a longer-term average.
-    A negative value indicates volume contraction (a key VCP signal).
+    A negative value indicates volume contraction.
     """
     df["Volume_LongAvg"] = df["v"].rolling(window=window*2).mean()
     df["Volume_Trend"] = ((df["v"] - df["Volume_LongAvg"]) / df["Volume_LongAvg"]) * 100
@@ -196,7 +196,7 @@ def generate_breakout_report(stock_list):
     For each ticker in stock_list, generate a report that includes:
       - Trade parameters: Updated Entry, Stop-Loss, and Profit Target.
       - Breakout probability (displayed as an integer percent).
-      - VCP Setup confirmation ("Yes" if breakout probability > 40% and volume trend is negative; otherwise "No").
+      - VCP Setup confirmation ("Yes" if volume trend is negative; otherwise "No").
       - Capital Flow Strength and Volume Trend.
     Returns a DataFrame listing the results for all scanned stocks (limited to the first 100).
     """
@@ -209,7 +209,11 @@ def generate_breakout_report(stock_list):
         entry_price = tech_data["current_price"]
         stop_loss = tech_data["Support"] if tech_data["Support"] > 0 else entry_price * 0.98
         profit_target = calculate_trade_levels(entry_price, stop_loss)
-        vcp_setup = "Yes" if (ml_breakout_prob > 0.4 and tech_data["Volume_Trend"] < 0) else "No"
+        # A stock qualifies if its volume trend is negative.
+        if tech_data["Volume_Trend"] < 0:
+            vcp_setup = "Yes"
+        else:
+            vcp_setup = "No"
         report_rows.append({
             "Stock": ticker,
             "Updated Entry": round(entry_price, 2),
@@ -235,8 +239,8 @@ def generate_breakout_report(stock_list):
 def main():
     st.title("Quantitative VCP Trading System with ML Refinement")
     st.markdown("""
-    This system uses technical analysis and a pre-trained LSTM model to detect Quantitative VCP setups.
-    You can import a list of stock tickers (from TradingView) via a CSV file or manually enter them.
+    This system uses technical analysis and a pre-trained LSTM model to detect stocks with a negative volume trend.
+    You can import a list of stock tickers via a CSV file or manually enter them.
     The system computes technical indicators (including volume contraction) and outputs a breakout probability along with suggested trade parameters.
     All results for the first 100 stocks scanned are displayed.
     """)
@@ -255,26 +259,25 @@ def main():
         stock_list_input = st.text_area("Or enter comma-separated stock tickers", "AAPL, MSFT, GOOGL, AMZN, TSLA")
         stock_list = [ticker.strip().upper() for ticker in stock_list_input.split(",") if ticker.strip() != ""]
     
-    if st.button("Scan for Breakout Candidates"):
+    if st.button("Scan for Stocks with Negative Volume Trend"):
         with st.spinner("Running technical analysis and ML breakout prediction..."):
             report_df = generate_breakout_report(stock_list)
         
         if report_df.empty:
-            st.warning("No stocks qualified as VCP setups based on the criteria.")
+            st.warning("No stocks with a negative volume trend were found based on the criteria.")
         else:
-            st.markdown("### 📌 Stocks Scanned (Up to First 100)")
+            st.markdown("### 📌 Stocks with Negative Volume Trend")
             st.table(report_df)
             
             st.markdown("#### 📢 Summary")
-            st.markdown("The table above lists all stocks with their computed trade parameters:")
+            st.markdown("The table above lists all stocks (up to the first 100) that exhibit a negative volume trend, along with suggested trade parameters:")
             st.markdown("- **Updated Entry:** Suggested entry price based on current price.")
             st.markdown("- **Stop-Loss:** Recommended stop-loss level (below support).")
             st.markdown("- **Profit Target:** Target price calculated with a 3:1 risk-to-reward ratio.")
             st.markdown("- **Breakout Probability:** The model's breakout probability (as an integer percent).")
-            st.markdown("- **VCP Setup:** Indicates if the stock qualifies as a VCP setup (Yes/No) based on criteria.")
+            st.markdown("- **VCP Setup:** 'Yes' indicates the stock has a negative volume trend.")
             st.markdown("- **Capital Flow Strength & Volume Trend:** Additional indicators to support the setup.")
             
 if __name__ == "__main__":
     main()
-
 
